@@ -86,7 +86,7 @@ const monitorZones = [
         name: "독도 태극기",
         tileUrl: "https://backend.wplace.live/files/s0/tiles/1774/795.png",
         originalPath: "./assets/ref_dokdo.png",
-        x: 40, y: 100, width: 360, height: 260,
+        x: 40, y: 100, width: 361, height: 261,
         wplaceUrl: "https://wplace.live/?lat=37.26901731348799&lng=131.8750484967773&zoom=12.532754498466533"
     },
     {
