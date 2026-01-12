@@ -1,0 +1,19 @@
+# 의존성
+node_modules/
+
+# 환경변수 파일 (절대 Git에 올리면 안됨!)
+.env
+.env.development
+.env.production
+.env.*
+
+# 로그 파일
+*.log
+npm-debug.log*
+
+# OS 파일
+.DS_Store
+Thumbs.db
+
+# 백업 파일
+assets/index_backup.js
