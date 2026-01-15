@@ -67,6 +67,18 @@ const SettingSchema = new mongoose.Schema({
 
 const Setting = mongoose.model('Setting', SettingSchema);
 
+// ✅ 화이트리스트 스키마 추가
+const WhitelistSchema = new mongoose.Schema({
+    guildId: { type: String, required: true, unique: true },
+    guildName: String,
+    addedBy: String,
+    addedAt: { type: Date, default: Date.now },
+    ownerTag: String,
+    memberCount: Number
+});
+
+const Whitelist = mongoose.model('Whitelist', WhitelistSchema);
+
 // 마지막 알림 시간을 메모리에 저장 (서버별, 구역별)
 const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
 
@@ -1134,6 +1146,237 @@ const commands = {
         }
     },
 
+    'whitelist': async (message, args) => {
+    // 개발자 본인 확인
+    if (message.author.id !== DEVELOPER_ID) {
+        return message.reply('❌ 이 명령어는 개발자만 사용할 수 있습니다.');
+    }
+
+    const action = args[0]?.toLowerCase();
+    
+    // 사용법 안내
+    if (!action || !['add', 'remove', 'list'].includes(action)) {
+        const whitelistCount = await Whitelist.countDocuments();
+        return message.reply(
+            '**화이트리스트 관리**\n' +
+            '• `w!whitelist add [서버ID]` - 서버 추가\n' +
+            '• `w!whitelist remove [서버ID]` - 서버 제거\n' +
+            '• `w!whitelist list` - 목록 확인\n\n' +
+            `**현재 상태:** ${whitelistCount}개 서버 등록됨`
+        );
+    }
+    
+    // 목록 확인
+    if (action === 'list') {
+        const whitelisted = await Whitelist.find().sort({ addedAt: -1 });
+        
+        if (whitelisted.length === 0) {
+            return message.reply('📋 화이트리스트가 비어있습니다.');
+        }
+        
+        // 페이지네이션 설정
+        const PAGE_SIZE = 10;
+        const totalPages = Math.ceil(whitelisted.length / PAGE_SIZE);
+        
+        const createListEmbed = (pageIndex) => {
+            const start = pageIndex * PAGE_SIZE;
+            const end = Math.min(start + PAGE_SIZE, whitelisted.length);
+            const pageItems = whitelisted.slice(start, end);
+            
+            const embed = new EmbedBuilder()
+                .setTitle(`📋 화이트리스트 서버 목록 (${pageIndex + 1}/${totalPages})`)
+                .setColor(0x00FF00)
+                .setDescription(`총 ${whitelisted.length}개 서버 등록`)
+                .setTimestamp();
+            
+            for (const item of pageItems) {
+                const guild = client.guilds.cache.get(item.guildId);
+                const status = guild ? '✅ 참여 중' : '❌ 미참여';
+                const currentMembers = guild ? `${guild.memberCount}명` : `${item.memberCount || '?'}명`;
+                
+                const info = 
+                    `**ID:** \`${item.guildId}\`\n` +
+                    `${status} | 멤버: ${currentMembers}\n` +
+                    `소유자: ${item.ownerTag || '정보 없음'}\n` +
+                    `등록일: <t:${Math.floor(item.addedAt.getTime() / 1000)}:R>`;
+                
+                embed.addFields({
+                    name: item.guildName || '알 수 없는 서버',
+                    value: info,
+                    inline: false
+                });
+            }
+            
+            return embed;
+        };
+        
+        let currentPage = 0;
+        const firstEmbed = createListEmbed(0);
+        
+        // 페이지가 1개면 버튼 없이 전송
+        if (totalPages === 1) {
+            return message.reply({ embeds: [firstEmbed] });
+        }
+        
+        // 페이지네이션 버튼
+        const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
+        
+        const getButtons = (page) => {
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('first')
+                        .setLabel('⏮️')
+                        .setStyle(ButtonStyle.Primary)
+                        .setDisabled(page === 0),
+                    new ButtonBuilder()
+                        .setCustomId('prev')
+                        .setLabel('◀')
+                        .setStyle(ButtonStyle.Primary)
+                        .setDisabled(page === 0),
+                    new ButtonBuilder()
+                        .setCustomId('page')
+                        .setLabel(`${page + 1}/${totalPages}`)
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true),
+                    new ButtonBuilder()
+                        .setCustomId('next')
+                        .setLabel('▶')
+                        .setStyle(ButtonStyle.Primary)
+                        .setDisabled(page === totalPages - 1),
+                    new ButtonBuilder()
+                        .setCustomId('last')
+                        .setLabel('⏭️')
+                        .setStyle(ButtonStyle.Primary)
+                        .setDisabled(page === totalPages - 1)
+                );
+            return row;
+        };
+        
+        const listMsg = await message.reply({
+            embeds: [firstEmbed],
+            components: [getButtons(currentPage)]
+        });
+        
+        const collector = listMsg.createMessageComponentCollector({
+            filter: (i) => i.user.id === message.author.id,
+            time: 600000
+        });
+        
+        collector.on('collect', async (interaction) => {
+            if (interaction.customId === 'first') currentPage = 0;
+            else if (interaction.customId === 'prev') currentPage = Math.max(0, currentPage - 1);
+            else if (interaction.customId === 'next') currentPage = Math.min(totalPages - 1, currentPage + 1);
+            else if (interaction.customId === 'last') currentPage = totalPages - 1;
+            
+            await interaction.update({
+                embeds: [createListEmbed(currentPage)],
+                components: [getButtons(currentPage)]
+            });
+        });
+        
+        collector.on('end', () => {
+            listMsg.edit({ components: [] }).catch(() => {});
+        });
+        
+        return;
+    }
+    
+    // 서버 추가
+    if (action === 'add') {
+        const guildId = args[1];
+        if (!guildId) {
+            return message.reply('❌ 추가할 서버 ID를 입력해주세요.');
+        }
+        
+        // 이미 등록되어 있는지 확인
+        const existing = await Whitelist.findOne({ guildId });
+        if (existing) {
+            return message.reply('⚠️ 이미 화이트리스트에 등록된 서버입니다.');
+        }
+        
+        // 서버 정보 가져오기
+        const guild = client.guilds.cache.get(guildId);
+        let guildName = '알 수 없는 서버';
+        let ownerTag = '알 수 없음';
+        let memberCount = 0;
+        
+        if (guild) {
+            guildName = guild.name;
+            memberCount = guild.memberCount;
+            const owner = await client.users.fetch(guild.ownerId).catch(() => null);
+            ownerTag = owner ? owner.tag : '알 수 없음';
+        }
+        
+        // DB에 추가
+        await Whitelist.create({
+            guildId,
+            guildName,
+            addedBy: message.author.tag,
+            ownerTag,
+            memberCount
+        });
+        
+        const embed = new EmbedBuilder()
+            .setTitle('✅ 서버가 화이트리스트에 추가되었습니다')
+            .setColor(0x00FF00)
+            .addFields(
+                { name: '서버 이름', value: guildName, inline: true },
+                { name: '서버 ID', value: guildId, inline: true },
+                { name: '멤버 수', value: `${memberCount}명`, inline: true },
+                { name: '소유자', value: ownerTag, inline: true },
+                { name: '등록자', value: message.author.tag, inline: true },
+                { name: '봇 참여 상태', value: guild ? '✅ 참여 중' : '❌ 미참여', inline: true }
+            )
+            .setFooter({ text: guild ? '정상적으로 사용 가능합니다' : '봇 초대 시 정상 작동합니다' })
+            .setTimestamp();
+        
+        return message.reply({ embeds: [embed] });
+    }
+    
+    // 서버 제거
+    if (action === 'remove') {
+        const guildId = args[1];
+        if (!guildId) {
+            return message.reply('❌ 제거할 서버 ID를 입력해주세요.');
+        }
+        
+        const existing = await Whitelist.findOne({ guildId });
+        if (!existing) {
+            return message.reply('⚠️ 해당 서버는 화이트리스트에 없습니다.');
+        }
+        
+        // DB에서 제거
+        await Whitelist.deleteOne({ guildId });
+        
+        // 봇이 해당 서버에 있다면 자동 퇴장
+        const guild = client.guilds.cache.get(guildId);
+        let leftServer = false;
+        
+        if (guild) {
+            try {
+                await guild.leave();
+                leftServer = true;
+                console.log(`📤 화이트리스트 제거로 인해 ${guild.name}에서 퇴장`);
+            } catch (error) {
+                console.error(`퇴장 실패 (${guild.name}):`, error);
+            }
+        }
+        
+        const embed = new EmbedBuilder()
+            .setTitle('✅ 서버가 화이트리스트에서 제거되었습니다')
+            .setColor(0xFFA500)
+            .addFields(
+                { name: '서버 이름', value: existing.guildName || '알 수 없음', inline: true },
+                { name: '서버 ID', value: guildId, inline: true },
+                { name: '자동 퇴장', value: leftServer ? '✅ 완료' : '❌ 미참여 중', inline: true }
+            )
+            .setTimestamp();
+        
+        return message.reply({ embeds: [embed] });
+    }
+},
+
 };
 
 // ========================================
@@ -1327,7 +1570,114 @@ client.once('clientReady', () => {
 
 // 봇이 새 서버에 추가되었을 때
 client.on('guildCreate', async (guild) => {
-    console.log(`✅ 새 서버 추가됨: ${guild.name} (ID: ${guild.id})`);
+    console.log(`🔔 새 서버 초대 감지: ${guild.name} (ID: ${guild.id})`);
+    
+    // 화이트리스트 체크
+    const isWhitelisted = await Whitelist.findOne({ guildId: guild.id });
+    
+    if (!isWhitelisted) {
+        console.log(`🚫 화이트리스트에 없는 서버 감지: ${guild.name} (ID: ${guild.id})`);
+        
+        try {
+            // 서버 소유자 정보
+            const owner = await client.users.fetch(guild.ownerId).catch(() => null);
+            const ownerTag = owner ? owner.tag : '알 수 없음';
+            
+            // 봇 초대자 정보 (audit log에서 확인 시도)
+            let inviter = '알 수 없음';
+            try {
+                const auditLogs = await guild.fetchAuditLogs({
+                    limit: 1,
+                    type: 28 // BOT_ADD
+                });
+                const botAddLog = auditLogs.entries.first();
+                if (botAddLog) {
+                    inviter = botAddLog.executor.tag;
+                }
+            } catch (auditError) {
+                console.log('초대자 정보 확인 실패:', auditError.message);
+            }
+            
+            // 개발자에게 DM 알림
+            if (DEVELOPER_ID) {
+                try {
+                    const developer = await client.users.fetch(DEVELOPER_ID);
+                    
+                    const alertEmbed = new EmbedBuilder()
+                        .setTitle('⚠️ 화이트리스트 외 서버 초대 감지')
+                        .setColor(0xFF0000)
+                        .addFields(
+                            { name: '서버 이름', value: guild.name, inline: true },
+                            { name: '서버 ID', value: guild.id, inline: true },
+                            { name: '멤버 수', value: `${guild.memberCount}명`, inline: true },
+                            { name: '서버 소유자', value: ownerTag, inline: true },
+                            { name: '봇 초대자', value: inviter, inline: true },
+                            { name: '\u200B', value: '\u200B', inline: true },
+                            { name: '조치', value: '서버에 안내 메시지를 보낸 후 자동 퇴장합니다.', inline: false },
+                            { name: '승인 방법', value: `\`w!whitelist add ${guild.id}\``, inline: false }
+                        )
+                        .setTimestamp();
+                    
+                    await developer.send({ embeds: [alertEmbed] });
+                } catch (dmError) {
+                    console.error('개발자 DM 전송 실패:', dmError.message);
+                }
+            }
+            
+            // 서버에 메시지 전송
+            const channel = guild.channels.cache.find(ch => 
+                ch.isTextBased() && 
+                ch.permissionsFor(guild.members.me).has('SendMessages') &&
+                ch.permissionsFor(guild.members.me).has('EmbedLinks')
+            );
+            
+            if (channel) {
+                const noticeEmbed = new EmbedBuilder()
+                    .setTitle('🚫 화이트리스트 미등록 서버')
+                    .setDescription(
+                        '이 서버는 화이트리스트에 등록되지 않은 서버입니다.\n\n' +
+                        '**아래 서버에서 사용 승인을 받아주세요:**\n' +
+                        'https://discord.gg/utxeK62GJV \n\n' +
+                        '승인 후 다시 초대해주시면 정상적으로 사용하실 수 있습니다.'
+                    )
+                    .setColor(0xFF0000)
+                    .addFields(
+                        { name: '📋 승인 절차', value: '1. 지원 서버 참여\n2. 절차에 따라 승인 요청\n3. 승인 대기\n4. 봇 재초대', inline: false }
+                    )
+                    .setFooter({ text: '잠시 후 자동으로 서버에서 퇴장합니다.' })
+                    .setTimestamp();
+                
+                await channel.send({ embeds: [noticeEmbed] });
+                
+                // 3초 후 퇴장 (메시지를 읽을 시간 제공)
+                await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+            
+            // 서버에서 자동 퇴장
+            await guild.leave();
+            console.log(`📤 ${guild.name}에서 자동 퇴장 완료`);
+            console.log(`   └ 소유자: ${ownerTag}`);
+            console.log(`   └ 초대자: ${inviter}`);
+            console.log(`   └ 멤버 수: ${guild.memberCount}명`);
+            
+        } catch (error) {
+            console.error(`자동 퇴장 중 오류 발생 (${guild.name}):`, error);
+        }
+        
+        return;
+    }
+    
+    // 화이트리스트에 있는 서버 - 정상 처리
+    console.log(`✅ 승인된 서버 추가됨: ${guild.name} (ID: ${guild.id})`);
+    
+    // 화이트리스트 정보 업데이트
+    await Whitelist.findOneAndUpdate(
+        { guildId: guild.id },
+        { 
+            guildName: guild.name,
+            memberCount: guild.memberCount
+        }
+    );
 });
 
 // 봇이 서버에서 퇴장하거나 서버가 삭제되었을 때 실행
