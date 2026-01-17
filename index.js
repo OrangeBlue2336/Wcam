@@ -10,6 +10,27 @@ const fs = require('fs');
 const mongoose = require('mongoose');
 
 // ========================================
+// API 보안 설정
+// ========================================
+const API_SECRET_KEY = process.env.API_SECRET_KEY || '';
+
+// API 키 검증 미들웨어
+function validateApiKey(req, res, next) {
+    const apiKey = req.headers['x-api-key'];
+    
+    // API 키가 없거나 일치하지 않으면 차단
+    if (!apiKey || apiKey !== API_SECRET_KEY) {
+        console.log(`🚫 무단 API 접근 시도: IP=${req.ip}, Key=${apiKey ? '잘못된 키' : '키 없음'}`);
+        return res.status(401).json({ 
+            success: false, 
+            error: 'Unauthorized access' 
+        });
+    }
+    
+    next();
+}
+
+// ========================================
 // 1. 환경 변수 설정 (Render에서 설정할 것들)
 // ========================================
 const MONGODB_URI = process.env.MONGODB_URI || '';
@@ -86,7 +107,102 @@ const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
 // 3. Express 웹서버 (Keep-alive용)
 // ========================================
 const app = express();
+
+// ✅ CORS 설정 추가 (대시보드에서 접근 가능하도록)
+const cors = require('cors');
+const corsOptions = {
+       origin: process.env.DASHBOARD_URL || '*',
+       optionsSuccessStatus: 200
+   };
+   app.use(cors(corsOptions));
+
+
 app.get('/', (req, res) => res.send('Wplace Bot is Running!'));
+
+// ✅ 새로운 API 엔드포인트 추가
+// 봇 상태 확인 API
+app.get('/api/status', validateApiKey, (req, res) => {
+    res.json({
+        online: true,
+        totalServers: client.guilds.cache.size,
+        totalZones: monitorZones.length,
+        uptime: process.uptime()
+    });
+});
+
+// 구역별 실시간 데이터 API
+const zoneMatchData = {}; // 전역 변수로 일치율 저장
+
+app.get('/api/zones', validateApiKey, async (req, res) => {
+    try {
+        const zonesData = await Promise.all(monitorZones.map(async (zone, index) => {
+            // 현재 저장된 일치율 가져오기 (없으면 null)
+            const matchData = zoneMatchData[zone.name] || null;
+            
+            return {
+                name: zone.name,
+                tileUrl: zone.tileUrl,
+                wplaceUrl: zone.wplaceUrl,
+                matchPercentage: matchData ? matchData.percentage : null,
+                lastChecked: matchData ? matchData.timestamp : null,
+                threshold: 90,
+                totalPixels: matchData ? matchData.totalPixels : null,
+                matchPixels: matchData ? matchData.matchPixels : null,
+                diffPixels: matchData ? matchData.diffPixels : null
+            };
+        }));
+        
+        res.json({
+            success: true,
+            zones: zonesData,
+            lastUpdate: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('API 오류:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 특정 구역의 최신 이미지 가져오기
+app.get('/api/zone/:zoneName/image', validateApiKey, async (req, res) => {
+    try {
+        const zoneName = req.params.zoneName;
+        const zone = monitorZones.find(z => z.name === zoneName);
+        
+        if (!zone) {
+            return res.status(404).json({ success: false, error: '구역을 찾을 수 없습니다' });
+        }
+        
+        // 실시간 이미지 가져오기
+        const response = await axios.get(zone.tileUrl, { responseType: 'arraybuffer' });
+        const currentFlagBuffer = await sharp(Buffer.from(response.data))
+            .extract({ left: zone.x, top: zone.y, width: zone.width, height: zone.height })
+            .toBuffer();
+        
+        res.set('Content-Type', 'image/png');
+        res.send(currentFlagBuffer);
+    } catch (error) {
+        console.error('이미지 로드 오류:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 일치율 히스토리 API (차트용)
+const zoneHistory = {}; // 구역별 히스토리 저장
+
+app.get('/api/zone/:zoneName/history', validateApiKey, (req, res) => {
+    const zoneName = req.params.zoneName;
+    const history = zoneHistory[zoneName] || [];
+    
+    res.json({
+        success: true,
+        zoneName: zoneName,
+        history: history.slice(-20) // 최근 20개만 반환
+    });
+});
+
+app.use(express.static('public')); // public 폴더에 HTML 파일 넣기
+
 app.listen(process.env.PORT || 3000, () => console.log('🌐 Keep-alive 서버 실행 중'));
 
 // 10분마다 자기 자신에게 요청 보내기 (Render 무료 플랜 슬립 방지)
@@ -1411,6 +1527,29 @@ async function checkZones() {
             const totalPixels = width * height;
             const matchPercentage = ((totalPixels - numDiffPixels) / totalPixels) * 100;
 
+            // ✅ 일치율 데이터 저장
+            zoneMatchData[zone.name] = {
+                percentage: matchPercentage,
+                timestamp: new Date().toISOString(),
+                totalPixels: totalPixels,
+                matchPixels: totalPixels - numDiffPixels,
+                diffPixels: numDiffPixels
+            };
+            
+            // ✅ 히스토리 저장
+            if (!zoneHistory[zone.name]) {
+                zoneHistory[zone.name] = [];
+            }
+            zoneHistory[zone.name].push({
+                percentage: matchPercentage,
+                timestamp: new Date().toISOString()
+            });
+            
+            // 최대 50개만 유지
+            if (zoneHistory[zone.name].length > 50) {
+                zoneHistory[zone.name].shift();
+            }
+
             console.log(`[${zone.name}] 일치율: ${matchPercentage.toFixed(2)}%`);
 
             // 모든 활성화된 서버에 대해 각각의 임계값 체크
@@ -1564,8 +1703,8 @@ client.once('clientReady', () => {
         });
     }, 30000);  // 30초 = 30000ms
     
-    // 1분마다 감시 수행
-    setInterval(checkZones, 1000 * 60 * 1);
+    // 30초마다 감시 수행
+    setInterval(checkZones, 1000 * 30);
 });
 
 // 봇이 새 서버에 추가되었을 때
