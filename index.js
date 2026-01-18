@@ -108,15 +108,6 @@ const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
 // ========================================
 const app = express();
 
-// ✅ CORS 설정 추가 (대시보드에서 접근 가능하도록)
-const cors = require('cors');
-const corsOptions = {
-       origin: process.env.DASHBOARD_URL || '*',
-       optionsSuccessStatus: 200
-   };
-   app.use(cors(corsOptions));
-
-
 app.get('/', (req, res) => res.send('Wplace Bot is Running!'));
 
 // ✅ 새로운 API 엔드포인트 추가
@@ -1829,4 +1820,45 @@ client.on('guildDelete', (guild) => {
 // ========================================
 // 11. 봇 로그인
 // ========================================
-client.login(BOT_TOKEN);
+client.login(BOT_TOKEN)
+    .then(() => {
+        console.log('✅ Discord 로그인 성공!');
+    })
+    .catch(error => {
+        console.error('❌ Discord 로그인 실패:', error);
+        console.error('에러 상세:', error.message);
+        console.error('에러 코드:', error.code);
+        
+        // 토큰 유효성 확인 (앞 4자리만 표시)
+        if (BOT_TOKEN) {
+            console.log('BOT_TOKEN 앞 4자리:', BOT_TOKEN.substring(0, 4) + '...');
+        } else {
+            console.error('❌ BOT_TOKEN이 설정되지 않았습니다!');
+        }
+        
+        process.exit(1);
+    });
+
+// Discord 클라이언트 에러 핸들러 추가
+client.on('error', error => {
+    console.error('❌ Discord 클라이언트 에러:', error);
+});
+
+client.on('warn', warning => {
+    console.warn('⚠️ Discord 경고:', warning);
+});
+
+client.on('debug', info => {
+    if (IS_DEV) {
+        console.log('🔍 Discord 디버그:', info);
+    }
+});
+
+// 연결 끊김 감지
+client.on('shardDisconnect', (event, shardId) => {
+    console.error(`❌ Shard ${shardId} 연결 끊김:`, event);
+});
+
+client.on('shardReconnecting', shardId => {
+    console.log(`🔄 Shard ${shardId} 재연결 시도 중...`);
+});
