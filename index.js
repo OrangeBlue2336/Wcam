@@ -107,6 +107,7 @@ const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
 // 3. Express 웹서버 (Keep-alive용)
 // ========================================
 const app = express();
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 서버가 포트 ${PORT}에서 실행 중입니다`);
