@@ -4,8 +4,12 @@
   "description": "Wplace 태극기 모니터링 봇",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "node -r dotenv/config index.js dotenv_config_path=.env.development",
+    "prod": "node -r dotenv/config index.js dotenv_config_path=.env.production",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  
   "engines": {
     "node": ">=18.0.0"
   },
