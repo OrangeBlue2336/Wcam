@@ -5,28 +5,24 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "NODE_ENV=development node index.js",
-    "prod": "NODE_ENV=production node index.js"
+    "dev": "node -r dotenv/config index.js dotenv_config_path=.env.development",
+    "prod": "node -r dotenv/config index.js dotenv_config_path=.env.production",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "axios": "^1.13.2",
-    "cors": "^2.8.5",
-    "discord.js": "^14.25.1",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "mongodb": "^7.0.0",
-    "mongoose": "^9.1.2",
-    "pixelmatch": "^7.1.0",
+    "axios": "^1.6.0",
+    "discord.js": "^14.14.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "mongoose": "^8.0.0",
+    "pixelmatch": "^5.3.0",
     "pngjs": "^7.0.0",
-    "sharp": "^0.34.5"
-  },
+    "sharp": "^0.33.0"
+    },
   "overrides": {
     "undici": "^6.23.0"
   }
