@@ -1652,6 +1652,74 @@ async function sendAlert(zone, percentage, imageBuffer, guildId, matchPixels, to
 // ========================================
 // 10. 이벤트 핸들러
 // ========================================
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ 처리되지 않은 Promise 거부:', reason);
+    console.error('Promise:', promise);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ 처리되지 않은 예외:', error);
+    console.error('Stack:', error.stack);
+});
+
+// Discord 클라이언트 에러 핸들러 (login 전에 등록!)
+client.on('error', error => {
+    console.error('❌ Discord 클라이언트 에러:', error);
+    console.error('에러 상세:', error.message);
+});
+
+client.on('warn', warning => {
+    console.warn('⚠️ Discord 경고:', warning);
+});
+
+client.on('shardError', error => {
+    console.error('❌ Shard 에러:', error);
+});
+
+client.on('shardDisconnect', (event, shardId) => {
+    console.error(`❌ Shard ${shardId} 연결 끊김:`, event);
+});
+
+client.on('shardReconnecting', shardId => {
+    console.log(`🔄 Shard ${shardId} 재연결 시도 중...`);
+});
+
+// ========================================
+// 11. 봇 로그인 - 최우선 실행
+// ========================================
+console.log('🔐 Discord 봇 로그인 시도 중...');
+console.log('BOT_TOKEN 존재 여부:', !!BOT_TOKEN);
+console.log('BOT_TOKEN 길이:', BOT_TOKEN ? BOT_TOKEN.length : 0);
+console.log('BOT_TOKEN 앞 10자:', BOT_TOKEN ? BOT_TOKEN.substring(0, 10) + '...' : 'null');
+
+// 즉시 로그인 시도
+client.login(BOT_TOKEN)
+    .then(() => {
+        console.log('✅✅✅ Discord 로그인 Promise 성공! ✅✅✅');
+    })
+    .catch(error => {
+        console.error('❌❌❌ Discord 로그인 실패! ❌❌❌');
+        console.error('에러 타입:', error.name);
+        console.error('에러 메시지:', error.message);
+        console.error('에러 코드:', error.code);
+        console.error('전체 에러:', JSON.stringify(error, null, 2));
+        
+        if (error.code === 'TOKEN_INVALID') {
+            console.error('🚨 토큰이 유효하지 않습니다! Discord Developer Portal에서 토큰을 재생성하세요.');
+        } else if (error.code === 'DISALLOWED_INTENTS') {
+            console.error('🚨 Intent 권한이 없습니다! Discord Developer Portal에서 Intent를 활성화하세요.');
+        } else if (error.message?.includes('timeout')) {
+            console.error('🚨 Discord API 연결 타임아웃! 네트워크 문제일 수 있습니다.');
+        }
+        
+        process.exit(1);
+    });
+
+console.log('🔐 Discord 로그인 요청 전송 완료 (응답 대기 중...)');
+
+// ========================================
+// 12. 메시지 이벤트 핸들러
+// ========================================
 client.on('messageCreate', async (message) => {
     if (!message.content.toLowerCase().startsWith('w!') || message.author.bot) return;
 
@@ -1668,9 +1736,17 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-client.once('clientReady', () => {
-    console.log(`✅ ${client.user.tag} 온라인! 감시 시스템 가동 중...`);
+// ========================================
+// 13. Ready 이벤트 핸들러
+// ========================================
+client.once('ready', () => {
+    console.log('');
+    console.log('='.repeat(50));
+    console.log(`✅✅✅ ${client.user.tag} 온라인! ✅✅✅`);
     console.log(`📡 ${client.guilds.cache.size}개 서버에서 활동 중`);
+    console.log('🔍 감시 시스템 가동 중...');
+    console.log('='.repeat(50));
+    console.log('');
 
     // Rich Presence 설정
     let statusIndex = 0;
@@ -1692,7 +1768,7 @@ client.once('clientReady', () => {
             activities: [statuses[statusIndex]],
             status: 'online'
         });
-    }, 30000);  // 30초 = 30000ms
+    }, 30000);
     
     // 30초마다 감시 수행
     setInterval(checkZones, 1000 * 30);
@@ -1785,7 +1861,7 @@ client.on('guildCreate', async (guild) => {
             
             // 서버에서 자동 퇴장
             await guild.leave();
-            console.log(`📤 ${guild.name}에서 자동 퇴장 완료`);
+            console.log(`🔤 ${guild.name}에서 자동 퇴장 완료`);
             console.log(`   └ 소유자: ${ownerTag}`);
             console.log(`   └ 초대자: ${inviter}`);
             console.log(`   └ 멤버 수: ${guild.memberCount}명`);
@@ -1814,51 +1890,8 @@ client.on('guildCreate', async (guild) => {
 client.on('guildDelete', (guild) => {
     // 참고: guild 객체가 부분적(partial)일 수 있으므로 이름이 없을 경우를 대비합니다.
     const guildName = guild.name || '알 수 없는 서버';
-    console.log(`📤 ${guildName}에서 퇴장함.`);
+    console.log(`🔤 ${guildName}에서 퇴장함.`);
 });
 
-// ========================================
-// 11. 봇 로그인
-// ========================================
-client.login(BOT_TOKEN)
-    .then(() => {
-        console.log('✅ Discord 로그인 성공!');
-    })
-    .catch(error => {
-        console.error('❌ Discord 로그인 실패:', error);
-        console.error('에러 상세:', error.message);
-        console.error('에러 코드:', error.code);
-        
-        // 토큰 유효성 확인 (앞 4자리만 표시)
-        if (BOT_TOKEN) {
-            console.log('BOT_TOKEN 앞 4자리:', BOT_TOKEN.substring(0, 4) + '...');
-        } else {
-            console.error('❌ BOT_TOKEN이 설정되지 않았습니다!');
-        }
-        
-        process.exit(1);
-    });
-
-// Discord 클라이언트 에러 핸들러 추가
-client.on('error', error => {
-    console.error('❌ Discord 클라이언트 에러:', error);
-});
-
-client.on('warn', warning => {
-    console.warn('⚠️ Discord 경고:', warning);
-});
-
-client.on('debug', info => {
-    if (IS_DEV) {
-        console.log('🔍 Discord 디버그:', info);
-    }
-});
-
-// 연결 끊김 감지
-client.on('shardDisconnect', (event, shardId) => {
-    console.error(`❌ Shard ${shardId} 연결 끊김:`, event);
-});
-
-client.on('shardReconnecting', shardId => {
-    console.log(`🔄 Shard ${shardId} 재연결 시도 중...`);
-});
+console.log('✅ 모든 이벤트 핸들러 등록 완료');
+console.log('⏳ Discord 연결 대기 중...');
