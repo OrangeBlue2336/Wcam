@@ -108,6 +108,11 @@ const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
 // ========================================
 const app = express();
 
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🌐 서버가 포트 ${PORT}에서 실행 중입니다`);
+    console.log(`📡 Public URL: ${RAILWAY_URL}`);
+});
+
 app.get('/', (req, res) => res.send('Wplace Bot is Running!'));
 
 // ✅ 새로운 API 엔드포인트 추가
