@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ['nodejs-18_x', 'python3', 'gcc', 'pkg-config', 'cairo', 'pango', 'libpng', 'libjpeg', 'giflib', 'librsvg']
+
+[phases.install]
+cmds = ['npm ci --only=production']
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = 'node index.js'

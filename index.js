@@ -35,7 +35,7 @@ function validateApiKey(req, res, next) {
 // ========================================
 const MONGODB_URI = process.env.MONGODB_URI || '';
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const RENDER_URL = process.env.RENDER_URL || '';
+const RAILWAY_URL = process.env.RENDER_URL || '';
 const NODE_ENV = process.env.NODE_ENV || 'production';
 const DEVELOPER_ID = process.env.DEVELOPER_ID || '' ;
 
@@ -106,7 +106,10 @@ const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
 // ========================================
 // 3. Express 웹서버 (Keep-alive용)
 // ========================================
-const app = express();
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🌐 서버가 포트 ${PORT}에서 실행 중입니다`);
+    console.log(`📡 Public URL: ${RAILWAY_URL}`);
+});
 
 app.get('/', (req, res) => res.send('Wplace Bot is Running!'));
 
@@ -194,12 +197,43 @@ app.get('/api/zone/:zoneName/history', validateApiKey, (req, res) => {
 
 app.use(express.static('public')); // public 폴더에 HTML 파일 넣기
 
-app.listen(process.env.PORT || 3000, () => console.log('🌐 Keep-alive 서버 실행 중'));
+// app.listen(process.env.PORT || 3000, () => console.log('🌐 Keep-alive 서버 실행 중'));
 
 // 10분마다 자기 자신에게 요청 보내기 (Render 무료 플랜 슬립 방지)
+// setInterval(() => {
+//    axios.get(RENDER_URL).catch(err => console.log('Keep-alive 오류:', err.message));
+// }, 1000 * 60 * 10);
+
 setInterval(() => {
-    axios.get(RENDER_URL).catch(err => console.log('Keep-alive 오류:', err.message));
-}, 1000 * 60 * 10);
+    if (RAILWAY_URL) {
+        axios.get(`${RAILWAY_URL}/api/status`, {
+            headers: { 'x-api-key': API_SECRET_KEY }
+        }).catch(err => console.log('헬스 체크:', err.message));
+    }
+}, 1000 * 60 * 30);
+
+process.on('SIGTERM', async () => {
+    console.log('🛑 SIGTERM 신호 수신, 종료 준비 중...');
+    
+    // Discord 봇 종료
+    client.destroy();
+    
+    // MongoDB 연결 종료
+    await mongoose.connection.close();
+    
+    console.log('✅ 정상 종료 완료');
+    process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+    console.log('🛑 SIGINT 신호 수신, 종료 준비 중...');
+    
+    client.destroy();
+    await mongoose.connection.close();
+    
+    console.log('✅ 정상 종료 완료');
+    process.exit(0);
+});
 
 // ========================================
 // 4. 디스코드 봇 클라이언트 생성
