@@ -1,13 +1,32 @@
 require('dotenv').config();
 
 const express = require('express');
-const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder, Options } = require('discord.js');
 const axios = require('axios');
 const sharp = require('sharp');
 const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const { PNG } = require('pngjs');
 const fs = require('fs');
 const mongoose = require('mongoose');
+const MAX_ALERT_HISTORY = 100; // 최대 알림 기록 수
+const MAX_GUILD_CACHE = 1000; // 최대 서버 캐시 수
+
+let keepAliveInterval;
+let statusUpdateInterval;
+let monitoringInterval;
+
+function cleanupAlertTime() {
+    const now = Date.now();
+    const keys = Object.keys(lastAlertTime);
+    
+    // 100개 이상이면 오래된 것부터 삭제
+    if (keys.length > MAX_ALERT_HISTORY) {
+        const sorted = keys.sort((a, b) => lastAlertTime[a] - lastAlertTime[b]);
+        const toDelete = sorted.slice(0, keys.length - MAX_ALERT_HISTORY);
+        toDelete.forEach(key => delete lastAlertTime[key]);
+        console.log(`🧹 오래된 알림 기록 ${toDelete.length}개 정리됨`);
+    }
+}
 
 // ========================================
 // API 보안 설정
@@ -210,7 +229,7 @@ app.use(express.static('public')); // public 폴더에 HTML 파일 넣기
 //    axios.get(RENDER_URL).catch(err => console.log('Keep-alive 오류:', err.message));
 // }, 1000 * 60 * 10);
 
-setInterval(() => {
+keepAliveInterval = setInterval(() => {
     if (RAILWAY_URL) {
         axios.get(`${RAILWAY_URL}/api/status`, {
             headers: { 'x-api-key': API_SECRET_KEY }
@@ -218,8 +237,13 @@ setInterval(() => {
     }
 }, 1000 * 60 * 30);
 
-process.on('SIGTERM', async () => {
-    console.log('🛑 SIGTERM 신호 수신, 종료 준비 중...');
+async function gracefulShutdown(signal) {
+    console.log(`🛑 ${signal} 신호 수신, 종료 준비 중...`);
+    
+    // ✅ 모든 타이머 정리
+    if (keepAliveInterval) clearInterval(keepAliveInterval);
+    if (statusUpdateInterval) clearInterval(statusUpdateInterval);
+    if (monitoringInterval) clearInterval(monitoringInterval);
     
     // Discord 봇 종료
     client.destroy();
@@ -229,17 +253,23 @@ process.on('SIGTERM', async () => {
     
     console.log('✅ 정상 종료 완료');
     process.exit(0);
-});
+}
 
-process.on('SIGINT', async () => {
-    console.log('🛑 SIGINT 신호 수신, 종료 준비 중...');
-    
-    client.destroy();
-    await mongoose.connection.close();
-    
-    console.log('✅ 정상 종료 완료');
-    process.exit(0);
-});
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+function logMemoryUsage() {
+    const used = process.memoryUsage();
+    console.log('📊 메모리 사용량:');
+    console.log(`  RSS: ${Math.round(used.rss / 1024 / 1024)} MB`);
+    console.log(`  Heap: ${Math.round(used.heapUsed / 1024 / 1024)} MB / ${Math.round(used.heapTotal / 1024 / 1024)} MB`);
+    console.log(`  External: ${Math.round(used.external / 1024 / 1024)} MB`);
+    console.log(`  Alert History: ${Object.keys(lastAlertTime).length}개`);
+    console.log(`  Zone History: ${Object.keys(zoneHistory).reduce((sum, key) => sum + zoneHistory[key].length, 0)}개`);
+}
+
+// 1시간마다 메모리 사용량 로깅
+setInterval(logMemoryUsage, 1000 * 60 * 60);
 
 // ========================================
 // 4. 디스코드 봇 클라이언트 생성
@@ -249,7 +279,19 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
-    ]
+    ],
+    makeCache: Options.cacheWithLimits({
+        MessageManager: 200,
+        GuildMemberManager: 200,
+        PresenceManager: 0,
+        ReactionManager: 0
+    }),
+    sweepers: {
+        messages: {
+            interval: 3600, // 1시간마다
+            lifetime: 1800  // 30분 이상된 메시지 삭제
+        }
+    }
 });
 
 // ========================================
@@ -1545,6 +1587,8 @@ const commands = {
 // 8. 핵심 감시 로직
 // ========================================
 async function checkZones() {
+    cleanupAlertTime();
+    
     for (const zone of monitorZones) {
         try {
             if (!fs.existsSync(zone.originalPath)) {
@@ -1651,9 +1695,19 @@ async function checkZones() {
                 }
             }
 
+            // ✅ 메모리 해제: 버퍼 참조 제거
+            currentImg.data = null;
+            originalImg.data = null;
+            diff.data = null;
+
         } catch (error) {
             console.error(`❌ ${zone.name} 감시 오류:`, error.message);
         }
+    }
+    
+    // ✅ 강제 가비지 컬렉션 힌트
+    if (global.gc) {
+        global.gc();
     }
 }
 
@@ -1741,7 +1795,7 @@ client.once('clientReady', () => {
     });
     
     // 30초마다 상태 교체
-    setInterval(() => {
+    statusUpdateInterval = setInterval(() => {
         statusIndex = (statusIndex + 1) % statuses.length;
         client.user.setPresence({
             activities: [statuses[statusIndex]],
