@@ -38,6 +38,9 @@ const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const RAILWAY_URL = process.env.RENDER_URL || '';
 const NODE_ENV = process.env.NODE_ENV || 'production';
 const DEVELOPER_ID = process.env.DEVELOPER_ID || '' ;
+const SUPPORT_SERVER_URL = process.env.SUPPORT_SERVER_URL || 'https://discord.gg/utxeK62GJV';
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://wplacebackend.github.io';
+
 
 // 개발 모드 확인
 const IS_DEV = NODE_ENV === 'development';
@@ -857,10 +860,25 @@ const commands = {
         return row;
     };
 
+    const getLinkButtons = () => {
+    const row = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setLabel('🎫 서포트 서버')
+                .setStyle(ButtonStyle.Link)
+                .setURL(SUPPORT_SERVER_URL),
+            new ButtonBuilder()
+                .setLabel('📊 실시간 대시보드')
+                .setStyle(ButtonStyle.Link)
+                .setURL(DASHBOARD_URL)
+        );
+    return row;
+};
+
     // 초기 메시지 전송
     const helpMessage = await message.reply({
         embeds: [pages[currentPage]],
-        components: [getButtons(currentPage)]
+        components: [getButtons(currentPage), getLinkButtons()]
     });
 
     // 버튼 클릭 이벤트 리스너
@@ -878,7 +896,7 @@ const commands = {
 
         await interaction.update({
             embeds: [pages[currentPage]],
-            components: [getButtons(currentPage)]
+            components: [getButtons(currentPage), getLinkButtons()]  // ⭐ 배열에 추가
         });
     });
 
@@ -886,7 +904,7 @@ const commands = {
         // 5분 후 버튼 비활성화
         helpMessage.edit({
             embeds: [pages[currentPage]],
-            components: []
+            components: [getLinkButtons()]
         }).catch(() => {}); // 메시지가 삭제된 경우 무시
     });
 },
