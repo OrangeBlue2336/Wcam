@@ -9,6 +9,14 @@ const { PNG } = require('pngjs');
 const fs = require('fs');
 const mongoose = require('mongoose');
 
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ 처리되지 않은 거부(Unhandled Rejection):', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ 잡히지 않은 예외(Uncaught Exception):', error);
+});
+
 // ========================================
 // API 보안 설정
 // ========================================
@@ -1875,4 +1883,10 @@ client.on('guildDelete', (guild) => {
 // ========================================
 // 11. 봇 로그인
 // ========================================
-client.login(BOT_TOKEN);
+client.login(BOT_TOKEN)
+    .then(() => console.log('🔐 디스코드 게이트웨이 접속 요청 성공'))
+    .catch(error => {
+        console.error('❌ 봇 로그인 실패:', error);
+        // 치명적 오류 시 프로세스 종료 (Render가 재시작을 시도하게 함)
+        process.exit(1);
+    });
