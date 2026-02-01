@@ -8,6 +8,19 @@ const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const { PNG } = require('pngjs');
 const fs = require('fs');
 const mongoose = require('mongoose');
+const path = require('path');
+const { registerFont } = require('canvas');
+const fontPath = path.join(__dirname, 'fonts', '경기천년제목_M.ttf');
+if (require('fs').existsSync(fontPath)) {
+    registerFont(fontPath, { 
+        family: 'GyeonggiTitle',
+        weight: 'normal',
+        style: 'normal'
+    });
+    console.log('✅ 폰트 로드 완료:', fontPath);
+} else {
+    console.warn('⚠️ 폰트 파일을 찾을 수 없습니다:', fontPath);
+}
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ 처리되지 않은 거부(Unhandled Rejection):', reason);
@@ -640,7 +653,7 @@ const commands = {
                 .setDescription(
                     matchPercentage < serverThreshold
                         ? "⚠️ **주의: 현재 태극기가 훼손되었을 가능성이 있습니다!**"
-                        : "✅ 현재 태극기 상태가 양호합니다."
+                        : "✅ 현재 일치율이 임계값 이상입니다."
                 )
                 .setColor(matchPercentage < serverThreshold ? 0xFF0000 : 0x00FF00)
                 .setImage('attachment://current_flag.png')
@@ -790,8 +803,10 @@ const commands = {
             .addFields(
                 { name: 'w!ping', value: '봇의 응답 속도를 확인합니다.', inline: false },
                 { name: 'w!status', value: '현재 봇의 상태와 설정을 확인합니다.', inline: false },
-                { name: 'w!flag [지역]', value: '특정 구역의 실시간 상태를 확인합니다.\n예: `w!flag 독도`', inline: false },
-                { name: 'w!help', value: '이 도움말을 표시합니다.', inline: false }
+                { name: 'w!flag [지역]', value: '특정 지역의 실시간 상태를 확인합니다.\n예: `w!flag 독도`', inline: false },
+                { name: 'w!history [지역]', value: '최근 10분간 해당 지점의 일치율 변화 그래프를 출력합니다.\n예: `w!history 독도`', inline: false },
+                { name: 'w!help', value: '이 도움말을 표시합니다.', inline: false },
+                
             )
             .setFooter({ text: '💡 화살표 버튼으로 페이지 이동' })
             .setTimestamp(),
@@ -802,12 +817,12 @@ const commands = {
             .setColor(0x0099FF)
             .setDescription('**🔧 관리자 전용 - 전역 설정**')
             .addFields(
-                { name: 'w!setchannel [구역] #채널', value: '알림을 받을 채널을 설정합니다.\n• `w!setchannel #알림` - 모든 구역 기본값\n• `w!setchannel 독도 #독도알림` - 특정 구역만', inline: false },
-                { name: 'w!setrole [구역] @역할', value: '알림 시 멘션할 역할을 설정합니다.\n• `w!setrole @경보` - 모든 구역 기본값\n• `w!setrole 서울 @서울팀` - 특정 구역만', inline: false },
-                { name: 'w!setthreshold [구역] 값', value: '태극기 훼손 감지 임계값을 설정합니다.\n• `w!setthreshold 85` - 모든 구역 기본값\n• `w!setthreshold 독도 88` - 특정 구역만\n※ 83% 이하는 권장하지 않습니다.', inline: false },
+                { name: 'w!setchannel [지역] #채널', value: '알림을 받을 채널을 설정합니다.\n• `w!setchannel #알림` - 모든 지역 기본값\n• `w!setchannel 독도 #독도알림` - 특정 지역만', inline: false },
+                { name: 'w!setrole [지역] @역할', value: '알림 시 멘션할 역할을 설정합니다.\n• `w!setrole @경보` - 모든 지역 기본값\n• `w!setrole 서울 @서울팀` - 특정 지역만', inline: false },
+                { name: 'w!setthreshold [지역] 값', value: '태극기 훼손 감지 임계값을 설정합니다.\n• `w!setthreshold 85` - 모든 지역 기본값\n• `w!setthreshold 독도 88` - 특정 지역만\n※ 83% 이하는 권장하지 않습니다.', inline: false },
                 { name: 'w!setcooldown [시간]', value: '알림 쿨다운 시간을 설정합니다.\n예: `w!setcooldown 10m`, `w!setcooldown 1h`', inline: false }
             )
-            .setFooter({ text: '💡 [구역] 생략 시 전체 적용, 명시 시 해당 구역만 적용' })
+            .setFooter({ text: '💡 [지역] 생략 시 전체 적용, 명시 시 해당 지역만 적용' })
             .setTimestamp(),
 
         // 페이지 3: 구역 관리
@@ -816,8 +831,8 @@ const commands = {
             .setColor(0x0099FF)
             .setDescription('**🎯 관리자 전용 - 구역 관리**')
             .addFields(
-                { name: 'w!disablezone [구역]', value: '특정 구역의 감시를 비활성화합니다.\n예: `w!disablezone 서울`', inline: false },
-                { name: 'w!enablezone [구역]', value: '특정 구역의 감시를 재활성화합니다.\n예: `w!enablezone 서울`', inline: false },
+                { name: 'w!disablezone [지역]', value: '특정 지역의 감시를 비활성화합니다.\n예: `w!disablezone 서울`', inline: false },
+                { name: 'w!enablezone [지역]', value: '특정 지역의 감시를 재활성화합니다.\n예: `w!enablezone 서울`', inline: false },
                 { name: 'w!pause [시간]', value: '전체 감시를 일시 정지합니다.\n예: `w!pause 30m`, `w!pause` (무기한)', inline: false },
                 { name: 'w!resume', value: '일시 정지된 감시를 재개합니다.', inline: false }
             )
@@ -1544,6 +1559,141 @@ const commands = {
             .setTimestamp();
         
         return message.reply({ embeds: [embed] });
+    }
+},
+
+'history': async (message, args) => {
+    const zoneName = args.join(' ');
+        if (!zoneName) return message.reply('❌ 확인할 구역 이름을 입력해주세요. (예: w!history 독도)');
+
+        const zone = findZone(zoneName);
+        if (!zone) return message.reply(`❌ '${zoneName}' 구역을 찾을 수 없습니다.`);
+
+    // 쌓인 모든 데이터 가져오기 (최대 최근 20개)
+    const history = (zoneHistory[zone.name] || []).slice(-20);
+
+    try {
+        // Chart.js를 사용하여 그래프 생성
+        const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
+        const width = 1600;
+        const height = 800;
+        const chartJSNodeCanvas = new ChartJSNodeCanvas({ 
+        width, 
+        height,
+        chartCallback: (ChartJS) => {
+        ChartJS.defaults.font.family = 'GyeonggiTitle';
+        ChartJS.defaults.font.size = 16;
+        }
+    });
+
+        const configuration = {
+    type: 'line',
+    data: {
+        labels: history.map(h => new Date(h.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })),
+        datasets: [{
+            label: '일치율 (%)',
+            data: history.map(h => h.percentage),
+            borderColor: 'rgb(54, 162, 235)',
+            backgroundColor: 'rgba(54, 162, 235, 0.3)',
+            borderWidth: 3,
+            pointRadius: 5,
+            pointBackgroundColor: 'rgb(54, 162, 235)',
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+            tension: 0.4,
+            fill: true
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            title: {
+                display: true,
+                text: `${zone.name} - 일치율 변화`,
+                font: { size: 36, weight: 'bold' },
+                color: '#333'
+            },
+            legend: { 
+                display: true,
+                labels: {
+                    color: '#333',
+                    font: { size: 28 }
+                }
+            }
+        },
+        scales: {
+            y: {
+                beginAtZero: false,
+                min: Math.max(0, Math.floor(Math.min(...history.map(h => h.percentage)) - 5)),
+                max: 100,
+                ticks: {
+                    color: '#666',
+                    stepSize: 0.5,
+                    callback: function(value) {
+                    return value.toFixed(1) + '%';
+                 }
+               },
+                grid: {
+                    color: 'rgba(0, 0, 0, 0.1)',
+                    drawBorder: true
+                },
+                title: { 
+                    display: true, 
+                    text: '일치율 (%)',
+                    color: '#333',
+                    font: { size: 30 }
+                }
+            },
+            x: {
+                ticks: {
+                    color: '#666'
+                },
+                grid: {
+                    color: 'rgba(0, 0, 0, 0.1)',
+                    drawBorder: true
+                },
+                title: { 
+                    display: true, 
+                    text: '시간',
+                    color: '#333',
+                    font: { size: 30 }
+                }
+            }
+        },
+        backgroundColor: '#FFFFFF'
+    },
+    plugins: [{
+        id: 'customCanvasBackgroundColor',
+        beforeDraw: (chart) => {
+            const ctx = chart.canvas.getContext('2d');
+            ctx.save();
+            ctx.globalCompositeOperation = 'destination-over';
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, chart.width, chart.height);
+            ctx.restore();
+        }
+    }]
+};
+
+        const imageBuffer = await chartJSNodeCanvas.renderToBuffer(configuration);
+        const attachment = new AttachmentBuilder(imageBuffer, { name: 'history.png' });
+
+        const embed = new EmbedBuilder()
+            .setTitle(`📊 ${zone.name} 일치율 변화`)
+            .setDescription(`최근 10분간의 일치율 변화 그래프입니다.`)
+            .setColor(0x00AE86)
+            .setImage('attachment://history.png')
+            .addFields(
+                { name: '데이터 포인트', value: `${history.length}개`, inline: true },
+                { name: '최고 일치율', value: `${Math.max(...history.map(h => h.percentage)).toFixed(2)}%`, inline: true },
+                { name: '최저 일치율', value: `${Math.min(...history.map(h => h.percentage)).toFixed(2)}%`, inline: true }
+            )
+            .setTimestamp();
+
+        await message.reply({ embeds: [embed], files: [attachment] });
+    } catch (error) {
+        console.error('그래프 생성 오류:', error);
+        message.reply('❌ 그래프 생성 중 오류가 발생했습니다.');
     }
 },
 
