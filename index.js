@@ -1589,7 +1589,7 @@ const commands = {
         const configuration = {
     type: 'line',
     data: {
-        labels: history.map(h => new Date(h.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })),
+        labels: history.map(h => new Date(h.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Seoul' })),
         datasets: [{
             label: '일치율 (%)',
             data: history.map(h => h.percentage),
