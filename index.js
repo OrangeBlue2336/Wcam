@@ -10,6 +10,15 @@ const fs = require('fs');
 const mongoose = require('mongoose');
 const path = require('path');
 const { registerFont } = require('canvas');
+const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
+const chartJSNodeCanvas = new ChartJSNodeCanvas({ 
+    width: 1600, 
+    height: 800,
+    chartCallback: (ChartJS) => {
+        ChartJS.defaults.font.family = 'GyeonggiTitle';
+        ChartJS.defaults.font.size = 16;
+    }
+});
 const fontPath = path.join(__dirname, 'fonts', '경기천년제목_M.ttf');
 if (require('fs').existsSync(fontPath)) {
     registerFont(fontPath, { 
@@ -272,6 +281,8 @@ const client = new Client({
         GatewayIntentBits.MessageContent
     ]
 });
+
+client.setMaxListeners(15);
 
 // ========================================
 // 5. 감시 구역 설정
@@ -1573,20 +1584,7 @@ const commands = {
     const history = (zoneHistory[zone.name] || []).slice(-20);
 
     try {
-        // Chart.js를 사용하여 그래프 생성
-        const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
-        const width = 1600;
-        const height = 800;
-        const chartJSNodeCanvas = new ChartJSNodeCanvas({ 
-        width, 
-        height,
-        chartCallback: (ChartJS) => {
-        ChartJS.defaults.font.family = 'GyeonggiTitle';
-        ChartJS.defaults.font.size = 16;
-        }
-    });
-
-        const configuration = {
+                const configuration = {
     type: 'line',
     data: {
         labels: history.map(h => new Date(h.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Seoul' })),
