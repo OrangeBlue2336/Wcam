@@ -65,7 +65,7 @@ function validateApiKey(req, res, next) {
 // ========================================
 const MONGODB_URI = process.env.MONGODB_URI || '';
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const RAILWAY_URL = process.env.RENDER_URL || '';
+const KOYEB_URL = process.env.KOYEB_PUBLIC_DOMAIN || '';
 const NODE_ENV = process.env.NODE_ENV || 'production';
 const DEVELOPER_ID = process.env.DEVELOPER_ID || '' ;
 const SUPPORT_SERVER_URL = process.env.SUPPORT_SERVER_URL || 'https://discord.gg/utxeK62GJV';
@@ -144,7 +144,7 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 서버가 포트 ${PORT}에서 실행 중입니다`);
-    console.log(`📡 Public URL: ${RAILWAY_URL}`);
+    console.log(`📡 Public URL: ${KOYEB_URL}`);
 });
 
 app.get('/', (req, res) => res.send('Wplace Bot is Running!'));
@@ -241,12 +241,12 @@ app.use(express.static('public')); // public 폴더에 HTML 파일 넣기
 // }, 1000 * 60 * 10);
 
 setInterval(() => {
-    if (RAILWAY_URL) {
-        axios.get(`${RAILWAY_URL}/api/status`, {
+    if (KOYEB_URL) {
+        axios.get(`${KOYEB_URL}/api/status`, {
             headers: { 'x-api-key': API_SECRET_KEY }
         }).catch(err => console.log('헬스 체크:', err.message));
     }
-}, 1000 * 60 * 30);
+}, 1000 * 60 * 10);
 
 process.on('SIGTERM', async () => {
     console.log('🛑 SIGTERM 신호 수신, 종료 준비 중...');
