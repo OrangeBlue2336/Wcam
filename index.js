@@ -65,7 +65,9 @@ function validateApiKey(req, res, next) {
 // ========================================
 const MONGODB_URI = process.env.MONGODB_URI || '';
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const KOYEB_URL = process.env.KOYEB_PUBLIC_DOMAIN || '';
+const KOYEB_URL = process.env.KOYEB_PUBLIC_DOMAIN
+    ? `https://${process.env.KOYEB_PUBLIC_DOMAIN}`
+    : '';
 const NODE_ENV = process.env.NODE_ENV || 'production';
 const DEVELOPER_ID = process.env.DEVELOPER_ID || '' ;
 const SUPPORT_SERVER_URL = process.env.SUPPORT_SERVER_URL || 'https://discord.gg/utxeK62GJV';
