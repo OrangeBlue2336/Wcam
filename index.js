@@ -149,7 +149,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 Public URL: ${KOYEB_URL}`);
 });
 
-app.get('/', (req, res) => res.send('Wplace Bot is Running!'));
+app.get('/', (req, res) => res.send('Wcam Bot is Running!'));
 
 // ✅ 새로운 API 엔드포인트 추가
 // 봇 상태 확인 API
@@ -229,7 +229,7 @@ app.get('/api/zone/:zoneName/history', validateApiKey, (req, res) => {
     res.json({
         success: true,
         zoneName: zoneName,
-        history: history.slice(-20) // 최근 20개만 반환
+        history: history.slice(-60) // 최근 60개만 반환
     });
 });
 
@@ -817,7 +817,7 @@ const commands = {
                 { name: 'w!ping', value: '봇의 응답 속도를 확인합니다.', inline: false },
                 { name: 'w!status', value: '현재 봇의 상태와 설정을 확인합니다.', inline: false },
                 { name: 'w!flag [지역]', value: '특정 지역의 실시간 상태를 확인합니다.\n예: `w!flag 독도`', inline: false },
-                { name: 'w!history [지역]', value: '최근 10분간 해당 지점의 일치율 변화 그래프를 출력합니다.\n예: `w!history 독도`', inline: false },
+                { name: 'w!history [지역]', value: '최근 30분간 해당 지점의 일치율 변화 그래프를 출력합니다.\n예: `w!history 독도`', inline: false },
                 { name: 'w!help', value: '이 도움말을 표시합니다.', inline: false },
                 
             )
@@ -1582,8 +1582,8 @@ const commands = {
         const zone = findZone(zoneName);
         if (!zone) return message.reply(`❌ '${zoneName}' 구역을 찾을 수 없습니다.`);
 
-    // 쌓인 모든 데이터 가져오기 (최대 최근 20개)
-    const history = (zoneHistory[zone.name] || []).slice(-20);
+    // 쌓인 모든 데이터 가져오기 (최대 최근 60개)
+    const history = (zoneHistory[zone.name] || []).slice(-60);
 
     try {
                 const configuration = {
@@ -1680,7 +1680,7 @@ const commands = {
 
         const embed = new EmbedBuilder()
             .setTitle(`📊 ${zone.name} 일치율 변화`)
-            .setDescription(`최근 10분간의 일치율 변화 그래프입니다.`)
+            .setDescription(`최근 30분간의 일치율 변화 그래프입니다.`)
             .setColor(0x00AE86)
             .setImage('attachment://history.png')
             .addFields(
@@ -1749,8 +1749,8 @@ async function checkZones() {
                 timestamp: new Date().toISOString()
             });
             
-            // 최대 50개만 유지
-            if (zoneHistory[zone.name].length > 50) {
+            // 최대 60개만 유지
+            if (zoneHistory[zone.name].length > 60) {
                 zoneHistory[zone.name].shift();
             }
 
