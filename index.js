@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const express = require('express');
-const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 const sharp = require('sharp');
 const pixelmatch = require('pixelmatch').default || require('pixelmatch');
@@ -9,8 +9,17 @@ const { PNG } = require('pngjs');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const path = require('path');
-const { registerFont } = require('canvas');
+const { registerFont, createCanvas, loadImage } = require('canvas');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
+const GIFEncoder = require('gif-encoder-2');
+
+// ========================================
+// 전역 설정 및 상수
+// ========================================
+const RECORD_FPS = 30; // 수정이 용이하도록 상단에 배치
+const MAX_RECORD_DURATION_MS = 24 * 60 * 60 * 1000; // 최대 24시간
+const CAPTURE_INTERVAL_MS = 30000; // 30초마다 캡처 (기존 감시 주기와 동일하게 설정)
+
 const chartJSNodeCanvas = new ChartJSNodeCanvas({ 
     width: 1600, 
     height: 800,
@@ -137,6 +146,24 @@ const Whitelist = mongoose.model('Whitelist', WhitelistSchema);
 
 // 마지막 알림 시간을 메모리에 저장 (서버별, 구역별)
 const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
+
+// 녹화 세션 정보 (누가, 어디를, 언제까지 녹화하는지)
+const RecordSessionSchema = new mongoose.Schema({
+    userId: { type: String, required: true, unique: true },
+    zoneName: String,
+    startTime: { type: Date, default: Date.now },
+    endTime: Date,
+    isActive: { type: Boolean, default: true }
+});
+const RecordSession = mongoose.model('RecordSession', RecordSessionSchema);
+
+// 녹화 프레임 데이터 (이미지 바이너리 저장)
+const RecordFrameSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    frameData: Buffer,
+    timestamp: { type: Date, default: Date.now }
+});
+const RecordFrame = mongoose.model('RecordFrame', RecordFrameSchema);
 
 // ========================================
 // 3. Express 웹서버 (Keep-alive용)
@@ -329,6 +356,20 @@ function parseDuration(duration) {
     }
 }
 
+// 영문 시간 표기를 한국어로 변환하는 함수
+function durationToKorean(duration) {
+    const match = duration.match(/^(\d+)([smh])$/);
+    if (!match) return duration;
+    const value = parseInt(match[1]);
+    const unit = match[2];
+    switch (unit) {
+        case 's': return `${value}초`;
+        case 'm': return `${value}분`;
+        case 'h': return `${value}시간`;
+        default: return duration;
+    }
+}
+
 // 구역 이름으로 구역 객체 찾기
 function findZone(zoneName) {
     if (!zoneName) return null;
@@ -354,6 +395,101 @@ function getZoneSetting(setting, zoneName, key) {
     // 구역별 설정이 없으면 전역 기본값 사용
     const defaultKey = `default${key.charAt(0).toUpperCase() + key.slice(1)}`;
     return setting[defaultKey];
+}
+
+// 캡처 및 저장 함수
+async function captureAndSave(session) {
+    try {
+        const zone = monitorZones.find(z => z.name === session.zoneName);
+        if (!zone) return;
+
+        const response = await axios.get(zone.tileUrl, { responseType: 'arraybuffer' });
+        const frameBuffer = await sharp(Buffer.from(response.data))
+            .extract({ left: zone.x, top: zone.y, width: zone.width, height: zone.height })
+            .toBuffer();
+
+        await new RecordFrame({
+            userId: session.userId,
+            frameData: frameBuffer
+        }).save();
+        
+        console.log(`📸 녹화 ${session.userId} - ${session.zoneName} 프레임 저장됨`);
+    } catch (error) {
+        console.error(`❌ 녹화 오류 ${session.userId}:`, error.message);
+    }
+}
+
+async function finalizeRecord(userId) {
+    const session = await RecordSession.findOne({ userId });
+    if (!session) return;
+
+    try {
+        const frames = await RecordFrame.find({ userId }).sort({ timestamp: 1 });
+        const user = await client.users.fetch(userId);
+
+        if (frames.length === 0) {
+            await user.send("⚠️ 녹화된 프레임이 없어 GIF를 생성할 수 없습니다.");
+            await cleanupRecord(userId);
+            return;
+        }
+
+        console.log(`🎞️ [GIF 생성 시작] ${userId} - 총 ${frames.length} 프레임`);
+
+        const firstImg = await loadImage(frames[0].frameData);
+        const width = firstImg.width;
+        const height = firstImg.height;
+
+        const encoder = new GIFEncoder(width, height);
+        const canvas = createCanvas(width, height);
+        const ctx = canvas.getContext('2d');
+
+        encoder.start();
+        encoder.setRepeat(0);
+        encoder.setDelay(1000 / RECORD_FPS);
+        encoder.setQuality(10);
+
+        for (const frame of frames) {
+            const img = await loadImage(frame.frameData);
+            ctx.drawImage(img, 0, 0);
+            encoder.addFrame(ctx);
+        }
+
+        encoder.finish();
+        const buffer = encoder.out.getData();
+
+        const attachment = new AttachmentBuilder(buffer, { name: `record_${session.zoneName}.gif` });
+        await user.send({
+            content: `✅ **${session.zoneName}** 녹화가 완료되었습니다! (총 ${frames.length} 프레임)\nMP4 변환: https://cloudconvert.com/gif-to-mp4 \n※ Fit: Max, Resolution: 1920x1080으로 설정 \nGIF 최적화: https://ezgif.com/optimize`,
+            files: [attachment]
+        });
+
+        console.log(`✅ [GIF 전송 완료] ${userId}`);
+    } catch (error) {
+        console.error(`❌ [GIF 생성 오류] ${userId}:`, error);
+        const user = await client.users.fetch(userId).catch(() => null);
+        if (user) await user.send("❌ GIF 생성 중 오류가 발생했습니다.");
+    } finally {
+        await cleanupRecord(userId);
+    }
+}
+
+async function cleanupRecord(userId) {
+    await RecordSession.deleteOne({ userId });
+    await RecordFrame.deleteMany({ userId });
+}
+
+async function processRecordings() {
+    const now = new Date();
+    const activeSessions = await RecordSession.find({ isActive: true });
+
+    for (const session of activeSessions) {
+        if (now >= session.endTime) {
+            await RecordSession.updateOne({ userId: session.userId }, { isActive: false });
+            finalizeRecord(session.userId);
+            continue;
+        }
+        await captureAndSave(session);
+    }
 }
 
 // ========================================
@@ -495,7 +631,7 @@ const commands = {
             { upsert: true }
         );
 
-        message.reply(`✅ 알림 쿨다운이 ${duration}(으)로 설정되었습니다.`);
+        message.reply(`✅ 알림 쿨다운이 ${durationToKorean(duration)}(으)로 설정되었습니다.`);
     },
 
     'setthreshold': async (message, args) => {
@@ -818,6 +954,7 @@ const commands = {
                 { name: 'w!status', value: '현재 봇의 상태와 설정을 확인합니다.', inline: false },
                 { name: 'w!flag [지역]', value: '특정 지역의 실시간 상태를 확인합니다.\n예: `w!flag 독도`', inline: false },
                 { name: 'w!history [지역]', value: '최근 30분간 해당 지점의 일치율 변화 그래프를 출력합니다.\n예: `w!history 독도`', inline: false },
+                { name: 'w!record [지역] [시간]', value: '해당 지역을 지정한 시간동안 녹화하여 GIF로 제공합니다. (최대 24시간)\n• `w!record 독도 1h` - 1시간 동안 독도 녹화\n• `w!record stop` - 녹화 중지', inline: false },
                 { name: 'w!help', value: '이 도움말을 표시합니다.', inline: false },
                 
             )
@@ -973,7 +1110,7 @@ const commands = {
             { upsert: true }
         );
         
-        message.reply(`⏸️ 이 서버의 태극기 감시가 **${duration}** 동안 정지되었습니다.\n수동으로 재개하려면 \`w!resume\`을 입력하세요.`);
+        message.reply(`⏸️ 이 서버의 태극기 감시가 **${durationToKorean(duration)}** 동안 정지되었습니다.\n수동으로 재개하려면 \`w!resume\`을 입력하세요.`);
         
         // 자동 재개 타이머 설정
         setTimeout(async () => {
@@ -1697,6 +1834,64 @@ const commands = {
     }
 },
 
+'record': async (message, args) => {
+        if (args[0] === 'stop') {
+            const session = await RecordSession.findOne({ userId: message.author.id });
+            if (!session) return message.reply("❌ 현재 진행 중인 녹화가 없습니다.");
+
+            const confirmEmbed = new EmbedBuilder()
+                .setTitle("🎥 녹화 중단 확인")
+                .setDescription("정말 녹화를 중지하시겠습니까?\n지금까지 녹화된 이미지는 GIF로 변환되어 DM으로 전송됩니다.")
+                .setColor(0xFFA500);
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('confirm_stop_record').setLabel('확인').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('cancel_stop_record').setLabel('취소').setStyle(ButtonStyle.Secondary)
+            );
+
+            return message.reply({ embeds: [confirmEmbed], components: [row] });
+        }
+
+        if (args.length < 2) {
+            return message.reply("❌ 사용법: `w!record (지역) (시간)`\n예: `w!record 독도 30m` (최대 24시간)");
+        }
+
+        const zone = findZone(args[0]);
+        if (!zone) return message.reply(`❌ '${args[0]}' 구역을 찾을 수 없습니다.`);
+
+        const durationMs = parseDuration(args[1]);
+        if (!durationMs || durationMs <= 0 || durationMs > MAX_RECORD_DURATION_MS) {
+            return message.reply("❌ 시간 형식이 잘못되었거나 범위를 초과했습니다. (최대 24시간)");
+        }
+
+        const existing = await RecordSession.findOne({ userId: message.author.id });
+        if (existing) return message.reply("❌ 이미 녹화를 진행 중입니다.");
+
+        const endTime = new Date(Date.now() + durationMs);
+        await new RecordSession({
+            userId: message.author.id,
+            zoneName: zone.name,
+            endTime: endTime,
+            guildId: message.guild.id,
+            channelId: message.channel.id
+        }).save();
+
+        try {
+            const endUnix = Math.floor(endTime.getTime() / 1000);
+            const koreanDuration = durationToKorean(args[1]);
+            await message.author.send(
+                `⏺️ **${zone.name}** 녹화가 시작되었습니다.\n` +
+                `⏱️ **녹화 기간:** ${koreanDuration}\n` +
+                `⏳ **종료 예정:** <t:${endUnix}:R> (<t:${endUnix}:f>)\n\n` +
+                `종료 후 GIF가 이곳으로 전송됩니다.`
+            );
+            message.reply(`${koreanDuration} 동안 **${zone.name}** 녹화를 진행합니다. 녹화 시작 DM을 전송하였습니다.`);
+        } catch (e) {
+            await cleanupRecord(message.author.id);
+            return message.reply("❌ DM을 보낼 수 없습니다. DM 설정을 확인해주세요.");
+        }
+    },
+    
 };
 
 // ========================================
@@ -1881,6 +2076,17 @@ client.on('messageCreate', async (message) => {
     }
 });
 
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isButton()) return;
+    if (interaction.customId === 'confirm_stop_record') {
+        await interaction.update({ content: "✅ 녹화 중단됨", embeds: [], components: [] });
+        await RecordSession.updateOne({ userId: interaction.user.id }, { isActive: false });
+        await finalizeRecord(interaction.user.id);
+    } else if (interaction.customId === 'cancel_stop_record') {
+        await interaction.update({ content: "⏺️ 녹화 계속 진행", embeds: [], components: [] });
+    }
+});
+
 client.once('clientReady', () => {
     console.log(`✅ ${client.user.tag} 온라인! 감시 시스템 가동 중...`);
     console.log(`📡 ${client.guilds.cache.size}개 서버에서 활동 중`);
@@ -1909,6 +2115,7 @@ client.once('clientReady', () => {
     
     // 30초마다 감시 수행
     setInterval(checkZones, 1000 * 30);
+    setInterval(processRecordings, CAPTURE_INTERVAL_MS);
 });
 
 // 봇이 새 서버에 추가되었을 때
