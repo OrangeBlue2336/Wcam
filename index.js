@@ -7,7 +7,7 @@ const sharp = require('sharp');
 const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const { PNG } = require('pngjs');
 const fs = require('fs');
-const { execSync, spawn } = require('child_process');
+const { spawn } = require('child_process');
 const os = require('os');
 const mongoose = require('mongoose');
 const path = require('path');
@@ -392,8 +392,8 @@ function cleanupOrphanedTempDirs() {
                 const fullPath = path.join(tmpDirBase, file);
                 try {
                     const stats = fs.statSync(fullPath);
-                    // 폴더가 생성된 지 1시간(3600000ms)이 지났다면 삭제
-                    if (Date.now() - stats.mtimeMs > 3600000) {
+                    // 폴더가 생성된 지 6시간이 지났다면 삭제
+                    if (Date.now() - stats.mtimeMs > 21600000) {
                         fs.rmSync(fullPath, { recursive: true, force: true });
                         console.log(`🧹 고아 임시 폴더 삭제됨: ${fullPath}`);
                     }
