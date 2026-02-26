@@ -475,10 +475,11 @@ async function finalizeRecord(userId) {
             const ffmpeg = spawn('ffmpeg', [
                 '-framerate', String(RECORD_FPS),
                 '-i', inputPattern,
+                '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', // 가로/세로가 홀수인 경우 짝수로 패딩
                 '-c:v', 'libx264',       // H.264 코덱
                 '-pix_fmt', 'yuv420p',   // 호환성 최대화
                 '-preset', 'fast',        // 인코딩 속도/압축 균형
-                '-crf', '23',            // 화질 (낮을수록 좋음, 18~28 권장)
+                '-crf', '28',            // 화질 (낮을수록 좋음, 18~28 권장)
                 outputPath
             ]);
 
