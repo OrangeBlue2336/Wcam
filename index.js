@@ -381,6 +381,30 @@ function findZone(zoneName) {
     );
 }
 
+// 시작 시 남아있는 오래된 임시 폴더 정리 함수
+function cleanupOrphanedTempDirs() {
+    const tmpDirBase = os.tmpdir();
+    fs.readdir(tmpDirBase, (err, files) => {
+        if (err) return console.error('임시 폴더 읽기 실패:', err);
+        
+        files.forEach(file => {
+            if (file.startsWith('record_')) {
+                const fullPath = path.join(tmpDirBase, file);
+                try {
+                    const stats = fs.statSync(fullPath);
+                    // 폴더가 생성된 지 1시간(3600000ms)이 지났다면 삭제
+                    if (Date.now() - stats.mtimeMs > 3600000) {
+                        fs.rmSync(fullPath, { recursive: true, force: true });
+                        console.log(`🧹 고아 임시 폴더 삭제됨: ${fullPath}`);
+                    }
+                } catch (e) {
+                    console.error(`임시 폴더 삭제 실패: ${fullPath}`, e);
+                }
+            }
+        });
+    });
+}
+
 // 설정에서 구역별 값 가져오기 (구역 설정 > 전역 기본값 우선순위)
 function getZoneSetting(setting, zoneName, key) {
     if (!setting) return null;
@@ -479,7 +503,7 @@ async function finalizeRecord(userId) {
                 '-c:v', 'libx264',       // H.264 코덱
                 '-pix_fmt', 'yuv420p',   // 호환성 최대화
                 '-preset', 'fast',        // 인코딩 속도/압축 균형
-                '-crf', '28',            // 화질 (낮을수록 좋음, 18~28 권장)
+                '-crf', '17',            // 화질 (낮을수록 좋음, 18~28 권장)
                 outputPath
             ]);
 
@@ -500,11 +524,47 @@ async function finalizeRecord(userId) {
         const fileSizeMB = stats.size / (1024 * 1024);
 
         if (fileSizeMB > 24) {
-            await user.send(
-                `⚠️ 생성된 파일이 **${fileSizeMB.toFixed(1)}MB**로 Discord 업로드 한도(25MB)를 초과합니다.\n` +
-                `파일이 너무 크면 녹화 시간을 줄이거나 \`w!record stop\`으로 일찍 종료해주세요.`
-            );
+            console.log(`⚠️ [MP4 용량 초과] ${userId} - ${fileSizeMB.toFixed(1)}MB. 재압축 시도.`);
+            await user.send(`⚠️ 영상 용량이 커서(${fileSizeMB.toFixed(1)}MB) 전송 한도를 초과했습니다. 화질을 낮춰 재압축을 시도합니다. 잠시만 기다려주세요...`);
+
+            const compressedOutputPath = path.join(tmpDir, 'output_compressed.mp4');
+
+            // CRF 값을 32로 높여서(화질 감소, 용량 대폭 감소) 재압축
+            await new Promise((resolve, reject) => {
+                const reEncode = spawn('ffmpeg', [
+                    '-i', outputPath,
+                    '-c:v', 'libx264',
+                    '-preset', 'fast',
+                    '-crf', '26', // 화질을 더 낮춰서 용량을 더 줄임
+                    compressedOutputPath
+                ]);
+
+                reEncode.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`재압축 ffmpeg 종료 코드: ${code}`));
+                });
+            });
+
+            const newStats = fs.statSync(compressedOutputPath);
+            const newFileSizeMB = newStats.size / (1024 * 1024);
+
+            if (newFileSizeMB > 24) {
+                // 재압축 후에도 24MB를 넘으면 최종 포기
+                await user.send(
+                    `❌ 재압축을 진행했으나 파일이 여전히 너무 큽니다(${newFileSizeMB.toFixed(1)}MB).\n` +
+                    `녹화 시간을 조금 더 짧게 설정해주세요.`
+                );
+            } else {
+                // 재압축 성공 시 전송
+                const attachment = new AttachmentBuilder(compressedOutputPath, { name: `record_${session.zoneName}_compressed.mp4` });
+                await user.send({
+                    content: `✅ **${session.zoneName}** 녹화가 완료되었습니다! (압축됨, ${newFileSizeMB.toFixed(1)}MB)`,
+                    files: [attachment]
+                });
+                console.log(`✅ [MP4 재압축 전송 완료] ${userId}`);
+            }
         } else {
+            // 원본이 24MB 이하일 경우 정상 전송 (기존 로직)
             const attachment = new AttachmentBuilder(outputPath, { name: `record_${session.zoneName}.mp4` });
             await user.send({
                 content: `✅ **${session.zoneName}** 녹화가 완료되었습니다! (총 ${totalFrames}프레임, ${fileSizeMB.toFixed(1)}MB)`,
@@ -2145,6 +2205,7 @@ client.on('interactionCreate', async (interaction) => {
 client.once('clientReady', () => {
     console.log(`✅ ${client.user.tag} 온라인! 감시 시스템 가동 중...`);
     console.log(`📡 ${client.guilds.cache.size}개 서버에서 활동 중`);
+    cleanupOrphanedTempDirs();
 
     // Rich Presence 설정
     let statusIndex = 0;
