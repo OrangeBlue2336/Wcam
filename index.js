@@ -7,11 +7,12 @@ const sharp = require('sharp');
 const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const { PNG } = require('pngjs');
 const fs = require('fs');
+const { execSync, spawn } = require('child_process');
+const os = require('os');
 const mongoose = require('mongoose');
 const path = require('path');
 const { registerFont, createCanvas, loadImage } = require('canvas');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
-const GIFEncoder = require('gif-encoder-2');
 
 // ========================================
 // 전역 설정 및 상수
@@ -423,52 +424,105 @@ async function finalizeRecord(userId) {
     const session = await RecordSession.findOne({ userId });
     if (!session) return;
 
+    // 임시 작업 디렉토리 생성
+    const tmpDir = path.join(os.tmpdir(), `record_${userId}_${Date.now()}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+
     try {
-        const frames = await RecordFrame.find({ userId }).sort({ timestamp: 1 });
+        const totalFrames = await RecordFrame.countDocuments({ userId });
         const user = await client.users.fetch(userId);
 
-        if (frames.length === 0) {
-            await user.send("⚠️ 녹화된 프레임이 없어 GIF를 생성할 수 없습니다.");
+        if (totalFrames === 0) {
+            await user.send("⚠️ 녹화된 프레임이 없어 영상을 생성할 수 없습니다.");
             await cleanupRecord(userId);
             return;
         }
 
-        console.log(`🎞️ [GIF 생성 시작] ${userId} - 총 ${frames.length} 프레임`);
+        console.log(`🎞️ [MP4 생성 시작] ${userId} - 총 ${totalFrames}프레임`);
+        await user.send(`⏳ **${session.zoneName}** 영상 생성을 시작합니다. (총 ${totalFrames}프레임)\n프레임 수가 많을 경우 시간이 걸릴 수 있습니다.`);
 
-        const firstImg = await loadImage(frames[0].frameData);
-        const width = firstImg.width;
-        const height = firstImg.height;
+        // 프레임을 50개씩 꺼내서 임시 폴더에 PNG 파일로 저장
+        const frameIds = await RecordFrame.find({ userId })
+            .sort({ timestamp: 1 })
+            .select('_id')
+            .lean();
 
-        const encoder = new GIFEncoder(width, height);
-        const canvas = createCanvas(width, height);
-        const ctx = canvas.getContext('2d');
+        const CHUNK_SIZE = 50;
+        let frameIndex = 0;
 
-        encoder.start();
-        encoder.setRepeat(0);
-        encoder.setDelay(1000 / RECORD_FPS);
-        encoder.setQuality(10);
+        for (let i = 0; i < frameIds.length; i += CHUNK_SIZE) {
+            const chunkIds = frameIds.slice(i, i + CHUNK_SIZE).map(f => f._id);
+            const chunk = await RecordFrame.find({ _id: { $in: chunkIds } })
+                .sort({ timestamp: 1 })
+                .lean();
 
-        for (const frame of frames) {
-            const img = await loadImage(frame.frameData);
-            ctx.drawImage(img, 0, 0);
-            encoder.addFrame(ctx);
+            for (const frame of chunk) {
+                // %05d 형식으로 파일명 지정 (ffmpeg가 순서대로 읽기 위함)
+                const framePath = path.join(tmpDir, `frame_${String(frameIndex).padStart(5, '0')}.png`);
+                fs.writeFileSync(framePath, Buffer.from(frame.frameData.buffer || frame.frameData));
+                frame.frameData = null; // 즉시 메모리 해제
+                frameIndex++;
+            }
+
+            console.log(`📁 [프레임 저장] ${userId} - ${frameIndex}/${totalFrames}`);
         }
 
-        encoder.finish();
-        const buffer = encoder.out.getData();
+        // ffmpeg로 MP4 인코딩 (디스크에서 읽어서 디스크에 씀 → 메모리 거의 안 씀)
+        const outputPath = path.join(tmpDir, 'output.mp4');
+        const inputPattern = path.join(tmpDir, 'frame_%05d.png');
 
-        const attachment = new AttachmentBuilder(buffer, { name: `record_${session.zoneName}.gif` });
-        await user.send({
-            content: `✅ **${session.zoneName}** 녹화가 완료되었습니다! (총 ${frames.length} 프레임)\nMP4 변환: https://cloudconvert.com/gif-to-mp4 \n※ Fit: Max, Resolution: 1920x1080으로 설정 \nGIF 최적화: https://ezgif.com/optimize`,
-            files: [attachment]
+        await new Promise((resolve, reject) => {
+            const ffmpeg = spawn('ffmpeg', [
+                '-framerate', String(RECORD_FPS),
+                '-i', inputPattern,
+                '-c:v', 'libx264',       // H.264 코덱
+                '-pix_fmt', 'yuv420p',   // 호환성 최대화
+                '-preset', 'fast',        // 인코딩 속도/압축 균형
+                '-crf', '23',            // 화질 (낮을수록 좋음, 18~28 권장)
+                outputPath
+            ]);
+
+            ffmpeg.stderr.on('data', (data) => {
+                console.log(`ffmpeg: ${data}`);
+            });
+
+            ffmpeg.on('close', (code) => {
+                if (code === 0) resolve();
+                else reject(new Error(`ffmpeg 종료 코드: ${code}`));
+            });
         });
 
-        console.log(`✅ [GIF 전송 완료] ${userId}`);
+        console.log(`✅ [MP4 인코딩 완료] ${userId}`);
+
+        // Discord 파일 크기 제한 확인 (무료: 25MB)
+        const stats = fs.statSync(outputPath);
+        const fileSizeMB = stats.size / (1024 * 1024);
+
+        if (fileSizeMB > 24) {
+            await user.send(
+                `⚠️ 생성된 파일이 **${fileSizeMB.toFixed(1)}MB**로 Discord 업로드 한도(25MB)를 초과합니다.\n` +
+                `파일이 너무 크면 녹화 시간을 줄이거나 \`w!record stop\`으로 일찍 종료해주세요.`
+            );
+        } else {
+            const attachment = new AttachmentBuilder(outputPath, { name: `record_${session.zoneName}.mp4` });
+            await user.send({
+                content: `✅ **${session.zoneName}** 녹화가 완료되었습니다! (총 ${totalFrames}프레임, ${fileSizeMB.toFixed(1)}MB)`,
+                files: [attachment]
+            });
+            console.log(`✅ [MP4 전송 완료] ${userId}`);
+        }
+
     } catch (error) {
-        console.error(`❌ [GIF 생성 오류] ${userId}:`, error);
+        console.error(`❌ [MP4 생성 오류] ${userId}:`, error);
         const user = await client.users.fetch(userId).catch(() => null);
-        if (user) await user.send("❌ GIF 생성 중 오류가 발생했습니다.");
+        if (user) await user.send("❌ 영상 생성 중 오류가 발생했습니다.");
     } finally {
+        // 임시 파일 전부 삭제
+        try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch (e) {
+            console.error('임시 파일 삭제 실패:', e);
+        }
         await cleanupRecord(userId);
     }
 }
@@ -954,7 +1008,7 @@ const commands = {
                 { name: 'w!status', value: '현재 봇의 상태와 설정을 확인합니다.', inline: false },
                 { name: 'w!flag [지역]', value: '특정 지역의 실시간 상태를 확인합니다.\n예: `w!flag 독도`', inline: false },
                 { name: 'w!history [지역]', value: '최근 30분간 해당 지점의 일치율 변화 그래프를 출력합니다.\n예: `w!history 독도`', inline: false },
-                { name: 'w!record [지역] [시간]', value: '해당 지역을 지정한 시간동안 녹화하여 GIF로 제공합니다. (최대 24시간)\n• `w!record 독도 1h` - 1시간 동안 독도 녹화\n• `w!record stop` - 녹화 중지', inline: false },
+                { name: 'w!record [지역] [시간]', value: '해당 지역을 지정한 시간동안 녹화하여 MP4 영상으로 제공합니다. (최대 24시간)\n• `w!record 독도 1h` - 1시간 동안 독도 녹화\n• `w!record stop` - 녹화 중지', inline: false },
                 { name: 'w!help', value: '이 도움말을 표시합니다.', inline: false },
                 
             )
@@ -1841,7 +1895,7 @@ const commands = {
 
             const confirmEmbed = new EmbedBuilder()
                 .setTitle("🎥 녹화 중단 확인")
-                .setDescription("정말 녹화를 중지하시겠습니까?\n지금까지 녹화된 이미지는 GIF로 변환되어 DM으로 전송됩니다.")
+                .setDescription("정말 녹화를 중지하시겠습니까?\n지금까지 녹화된 이미지는 MP4로 변환되어 DM으로 전송됩니다.")
                 .setColor(0xFFA500);
 
             const row = new ActionRowBuilder().addComponents(
@@ -1883,7 +1937,7 @@ const commands = {
                 `⏺️ **${zone.name}** 녹화가 시작되었습니다.\n` +
                 `⏱️ **녹화 기간:** ${koreanDuration}\n` +
                 `⏳ **종료 예정:** <t:${endUnix}:R> (<t:${endUnix}:f>)\n\n` +
-                `종료 후 GIF가 이곳으로 전송됩니다.`
+                `종료 후 MP4 영상이 이곳으로 전송됩니다.`
             );
             message.reply(`${koreanDuration} 동안 **${zone.name}** 녹화를 진행합니다. 녹화 시작 DM을 전송하였습니다.`);
         } catch (e) {
