@@ -874,6 +874,7 @@ const commands = {
     message.reply({ embeds: [embed] });
 },
 
+   'f': async (message, args) => commands['flag'](message, args),
    'flag': async (message, args) => {
         const zoneName = args.join(' ');
         if (!zoneName) return message.reply('❌ 확인할 구역 이름을 입력해주세요. (예: w!flag 독도)');
@@ -1936,6 +1937,7 @@ const commands = {
     }
 },
 
+'h': async (message, args) => commands['history'](message, args),
 'history': async (message, args) => {
     const zoneName = args.join(' ');
         if (!zoneName) return message.reply('❌ 확인할 구역 이름을 입력해주세요. (예: w!history 독도)');
@@ -2058,6 +2060,7 @@ const commands = {
     }
 },
 
+'r': async (message, args) => commands['record'](message, args),
 'record': async (message, args) => {
         if (args[0] === 'stop') {
             const session = await RecordSession.findOne({ userId: message.author.id });
