@@ -81,7 +81,7 @@ const KOYEB_URL = process.env.KOYEB_PUBLIC_DOMAIN
 const NODE_ENV = process.env.NODE_ENV || 'production';
 const DEVELOPER_ID = process.env.DEVELOPER_ID || '' ;
 const SUPPORT_SERVER_URL = process.env.SUPPORT_SERVER_URL || 'https://discord.gg/utxeK62GJV';
-const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://wplacebackend.github.io';
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://orangeblue2336.github.io/wplace';
 
 
 // 개발 모드 확인
