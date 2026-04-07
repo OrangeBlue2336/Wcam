@@ -4,6 +4,7 @@ const express = require('express');
 const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 const sharp = require('sharp');
+sharp.cache(false);
 const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const { PNG } = require('pngjs');
 const fs = require('fs');
@@ -559,7 +560,7 @@ async function finalizeRecord(userId, sessionType = 'flag') {
 
         if (totalFrames === 0) {
             await user.send("⚠️ 녹화된 프레임이 없어 영상을 생성할 수 없습니다.");
-            await cleanupRecord(userId);
+            await cleanupRecord(userId, sessionType);
             return;
         }
 
@@ -689,7 +690,7 @@ async function finalizeRecord(userId, sessionType = 'flag') {
         } catch (e) {
             console.error('임시 파일 삭제 실패:', e);
         }
-        await cleanupRecord(userId);
+        await cleanupRecord(userId, sessionType);
     }
 }
 
@@ -2286,7 +2287,7 @@ const commands = {
             const previewAttachment = new AttachmentBuilder(previewBuffer, { name: 'preview.png' });
 
             const embed = new EmbedBuilder()
-                .setTitle("🎨 작품 타임랩스 — 녹화 영역 확인")
+                .setTitle("🎨 작품 타임랩스 - 녹화 영역 확인")
                 .setDescription(
                     `**위치:** 타일 (${tileX}, ${tileY}), 로컬 (${localX}, ${localY})\n` +
                     `**캡처 크기:** ${captureWidth} × ${captureHeight} 픽셀\n\n` +
