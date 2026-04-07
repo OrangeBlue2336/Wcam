@@ -104,7 +104,17 @@ if (!MONGODB_URI || !BOT_TOKEN) {
 // 2. MongoDB 연결 및 스키마 정의
 // ========================================
 mongoose.connect(MONGODB_URI)
-    .then(() => console.log('✅ MongoDB 연결 성공!'))
+    .then(async () => {
+        console.log('✅ MongoDB 연결 성공!');
+        
+        // 🔥 recordsessions 컬렉션의 골칫덩어리 고유 인덱스 강제 철거
+        try {
+            await mongoose.connection.db.collection('recordsessions').dropIndex('userId_1');
+            console.log('✅ userId_1 고유 인덱스 강제 삭제 완료');
+        } catch (error) {
+            // 인덱스가 이미 없으면 에러가 나므로 가볍게 무시
+        }
+    })
     .catch(err => console.error('❌ MongoDB 연결 실패:', err));
 
 // 서버별 설정을 저장하는 스키마
@@ -148,10 +158,21 @@ const Whitelist = mongoose.model('Whitelist', WhitelistSchema);
 // 마지막 알림 시간을 메모리에 저장 (서버별, 구역별)
 const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
 
+// 작품 녹화 대기 중인 세션 임시 저장 (버튼 확인 전)
+const pendingArtworkRecords = new Map();
+
 // 녹화 세션 정보 (누가, 어디를, 언제까지 녹화하는지)
 const RecordSessionSchema = new mongoose.Schema({
-    userId: { type: String, required: true, unique: true },
-    zoneName: String,
+    userId: { type: String, required: true, index: true },
+    sessionType: { type: String, enum: ['flag', 'artwork'], default: 'flag' },
+    zoneName: String,          // 태극기 녹화 전용
+    tileX: Number,             // 작품 녹화 전용
+    tileY: Number,
+    localX: Number,
+    localY: Number,
+    captureWidth: Number,
+    captureHeight: Number,
+    frameCount: { type: Number, default: 0 },
     startTime: { type: Date, default: Date.now },
     endTime: Date,
     isActive: { type: Boolean, default: true }
@@ -161,6 +182,7 @@ const RecordSession = mongoose.model('RecordSession', RecordSessionSchema);
 // 녹화 프레임 데이터 (이미지 바이너리 저장)
 const RecordFrameSchema = new mongoose.Schema({
     userId: { type: String, required: true, index: true },
+    sessionType: { type: String, default: 'flag' },
     frameData: Buffer,
     timestamp: { type: Date, default: Date.now }
 });
@@ -262,13 +284,6 @@ app.get('/api/zone/:zoneName/history', validateApiKey, (req, res) => {
 });
 
 app.use(express.static('public')); // public 폴더에 HTML 파일 넣기
-
-// app.listen(process.env.PORT || 3000, () => console.log('🌐 Keep-alive 서버 실행 중'));
-
-// 10분마다 자기 자신에게 요청 보내기 (Render 무료 플랜 슬립 방지)
-// setInterval(() => {
-//    axios.get(RENDER_URL).catch(err => console.log('Keep-alive 오류:', err.message));
-// }, 1000 * 60 * 10);
 
 setInterval(() => {
     if (KOYEB_URL) {
@@ -422,30 +437,116 @@ function getZoneSetting(setting, zoneName, key) {
     return setting[defaultKey];
 }
 
-// 캡처 및 저장 함수
+// 다중 타일 영역 캡처 함수 (다중_타일_대처.js 로직 적용)
+async function captureRegionBuffer(tileX, tileY, localX, localY, width, height) {
+    const endAbsX = localX + width - 1;
+    const endAbsY = localY + height - 1;
+    const etx = tileX + Math.floor(endAbsX / 1000);
+    const ety = tileY + Math.floor(endAbsY / 1000);
+    const elx = endAbsX % 1000;
+    const ely = endAbsY % 1000;
+
+    const stx = tileX, sty = tileY, slx = localX, sly = localY;
+    const composites = [];
+    let totalWidth = 0, totalHeight = 0;
+
+    for (let tx = stx; tx <= etx; tx++) {
+        for (let ty = sty; ty <= ety; ty++) {
+            const url = `https://backend.wplace.live/files/s0/tiles/${tx}/${ty}.png`;
+            const res = await axios.get(url, { responseType: 'arraybuffer' });
+
+            const cropLeft   = (tx === stx) ? slx : 0;
+            const cropTop    = (ty === sty) ? sly : 0;
+            const cropRight  = (tx === etx) ? elx : 999;
+            const cropBottom = (ty === ety) ? ely : 999;
+            const cropW = cropRight - cropLeft + 1;
+            const cropH = cropBottom - cropTop + 1;
+            if (cropW <= 0 || cropH <= 0) continue;
+
+            const cropped = await sharp(Buffer.from(res.data))
+                .extract({ left: cropLeft, top: cropTop, width: cropW, height: cropH })
+                .png().toBuffer();
+
+            const posX = (tx - stx) * 1000 + (tx === stx ? 0 : -slx);
+            const posY = (ty - sty) * 1000 + (ty === sty ? 0 : -sly);
+            composites.push({ input: cropped, left: posX, top: posY });
+
+            if (tx === etx) totalWidth  = posX + cropW;
+            if (ty === ety) totalHeight = posY + cropH;
+        }
+    }
+
+    if (composites.length === 0) throw new Error('캡처 가능한 영역이 없습니다.');
+
+    return await sharp({
+        create: { width: totalWidth, height: totalHeight, channels: 4,
+                  background: { r: 0, g: 0, b: 0, alpha: 0 } }
+    }).composite(composites).png().toBuffer();
+}
+
+// 캡처 및 저장 함수 (중복 프레임 제거 + 다중 타일 지원)
 async function captureAndSave(session) {
     try {
-        const zone = monitorZones.find(z => z.name === session.zoneName);
-        if (!zone) return;
+        let frameBuffer;
 
-        const response = await axios.get(zone.tileUrl, { responseType: 'arraybuffer' });
-        const frameBuffer = await sharp(Buffer.from(response.data))
-            .extract({ left: zone.x, top: zone.y, width: zone.width, height: zone.height })
-            .toBuffer();
+        if (session.sessionType === 'artwork') {
+            frameBuffer = await captureRegionBuffer(
+                session.tileX, session.tileY,
+                session.localX, session.localY,
+                session.captureWidth, session.captureHeight
+            );
+        } else {
+            const zone = monitorZones.find(z => z.name === session.zoneName);
+            if (!zone) return;
+            const response = await axios.get(zone.tileUrl, { responseType: 'arraybuffer' });
+            frameBuffer = await sharp(Buffer.from(response.data))
+                .extract({ left: zone.x, top: zone.y, width: zone.width, height: zone.height })
+                .toBuffer();
+        }
+
+        // 작품 녹화(artwork)일 경우에만 중복 프레임 비교 및 스킵
+        if (session.sessionType === 'artwork') {
+            const lastFrame = await RecordFrame.findOne({ userId: session.userId, sessionType: session.sessionType })
+                .sort({ timestamp: -1 }).select('frameData').lean();
+
+            if (lastFrame && lastFrame.frameData) {
+                const lastBuf = Buffer.isBuffer(lastFrame.frameData)
+                    ? lastFrame.frameData
+                    : Buffer.from(lastFrame.frameData.buffer || lastFrame.frameData);
+        
+                const currentRaw = await sharp(frameBuffer).raw().toBuffer();
+                const lastRaw = await sharp(lastBuf).raw().toBuffer();
+
+                if (currentRaw.equals(lastRaw)) {
+                    console.log(`⏭️ 중복 프레임 건너뜀 (${session.userId} / ${session.sessionType})`);
+                    return;
+                }
+            }
+        }
 
         await new RecordFrame({
             userId: session.userId,
+            sessionType: session.sessionType,
             frameData: frameBuffer
         }).save();
-        
-        console.log(`📸 녹화 ${session.userId} - ${session.zoneName} 프레임 저장됨`);
+
+        const newCount = (session.frameCount || 0) + 1;
+        await RecordSession.updateOne({ _id: session._id }, { frameCount: newCount });
+        console.log(`📸 녹화 ${session.userId}(${session.sessionType}) - ${newCount}프레임 저장됨`);
+
+        // 작품 녹화: 2880 프레임 도달 시 자동 종료
+        if (session.sessionType === 'artwork' && newCount >= 2880) {
+            await RecordSession.updateOne({ _id: session._id }, { isActive: false });
+            console.log(`🎬 최대 프레임(2880) 도달 - 자동 종료 (${session.userId})`);
+            finalizeRecord(session.userId, 'artwork');
+        }
     } catch (error) {
-        console.error(`❌ 녹화 오류 ${session.userId}:`, error.message);
+        console.error(`❌ 녹화 오류 (${session.userId}):`, error.message);
     }
 }
 
-async function finalizeRecord(userId) {
-    const session = await RecordSession.findOne({ userId });
+async function finalizeRecord(userId, sessionType = 'flag') {
+    const session = await RecordSession.findOne({ userId, sessionType });
     if (!session) return;
 
     // 임시 작업 디렉토리 생성
@@ -453,7 +554,7 @@ async function finalizeRecord(userId) {
     fs.mkdirSync(tmpDir, { recursive: true });
 
     try {
-        const totalFrames = await RecordFrame.countDocuments({ userId });
+        const totalFrames = await RecordFrame.countDocuments({ userId, sessionType });
         const user = await client.users.fetch(userId);
 
         if (totalFrames === 0) {
@@ -462,11 +563,15 @@ async function finalizeRecord(userId) {
             return;
         }
 
+        // 표시할 이름과 파일명 접두사 설정
+        const displayTitle = session.sessionType === 'artwork' ? '작품 타임랩스' : session.zoneName;
+        const filePrefix = session.sessionType === 'artwork' ? 'artwork_timelapse' : `record_${session.zoneName}`;
+
         console.log(`🎞️ [MP4 생성 시작] ${userId} - 총 ${totalFrames}프레임`);
-        await user.send(`⏳ **${session.zoneName}** 영상 생성을 시작합니다. (총 ${totalFrames}프레임)\n프레임 수가 많을 경우 시간이 걸릴 수 있습니다.`);
+        await user.send(`⏳ **${displayTitle}** 영상 생성을 시작합니다. (총 ${totalFrames}프레임)\n프레임 수가 많을 경우 시간이 걸릴 수 있습니다.`);
 
         // 프레임을 50개씩 꺼내서 임시 폴더에 PNG 파일로 저장
-        const frameIds = await RecordFrame.find({ userId })
+        const frameIds = await RecordFrame.find({ userId, sessionType })
             .sort({ timestamp: 1 })
             .select('_id')
             .lean();
@@ -556,18 +661,18 @@ async function finalizeRecord(userId) {
                 );
             } else {
                 // 재압축 성공 시 전송
-                const attachment = new AttachmentBuilder(compressedOutputPath, { name: `record_${session.zoneName}_compressed.mp4` });
+                const attachment = new AttachmentBuilder(compressedOutputPath, { name: `${filePrefix}_compressed.mp4` });
                 await user.send({
-                    content: `✅ **${session.zoneName}** 녹화가 완료되었습니다! (압축됨, ${newFileSizeMB.toFixed(1)}MB)`,
+                    content: `✅ **${displayTitle}** 녹화가 완료되었습니다! (압축됨, ${newFileSizeMB.toFixed(1)}MB)`,
                     files: [attachment]
                 });
                 console.log(`✅ [MP4 재압축 전송 완료] ${userId}`);
             }
         } else {
             // 원본이 24MB 이하일 경우 정상 전송 (기존 로직)
-            const attachment = new AttachmentBuilder(outputPath, { name: `record_${session.zoneName}.mp4` });
+            const attachment = new AttachmentBuilder(outputPath, { name: `${filePrefix}.mp4` });
             await user.send({
-                content: `✅ **${session.zoneName}** 녹화가 완료되었습니다! (총 ${totalFrames}프레임, ${fileSizeMB.toFixed(1)}MB)`,
+                content: `✅ **${displayTitle}** 녹화가 완료되었습니다! (총 ${totalFrames}프레임, ${fileSizeMB.toFixed(1)}MB)`,
                 files: [attachment]
             });
             console.log(`✅ [MP4 전송 완료] ${userId}`);
@@ -588,21 +693,22 @@ async function finalizeRecord(userId) {
     }
 }
 
-async function cleanupRecord(userId) {
-    await RecordSession.deleteOne({ userId });
-    await RecordFrame.deleteMany({ userId });
+async function cleanupRecord(userId, sessionType = 'flag') {
+    await RecordSession.deleteOne({ userId, sessionType });
+    await RecordFrame.deleteMany({ userId, sessionType });
 }
 
 async function processRecordings() {
-    if (IS_DEV) return; // 개발 환경에서는 녹화 프레임 저장 X
+    if (IS_DEV) return;
 
     const now = new Date();
     const activeSessions = await RecordSession.find({ isActive: true });
 
     for (const session of activeSessions) {
-        if (now >= session.endTime) {
-            await RecordSession.updateOne({ userId: session.userId }, { isActive: false });
-            finalizeRecord(session.userId);
+        // 태극기 녹화: 시간 기반 자동 종료
+        if (session.sessionType === 'flag' && session.endTime && now >= session.endTime) {
+            await RecordSession.updateOne({ _id: session._id }, { isActive: false });
+            finalizeRecord(session.userId, 'flag');
             continue;
         }
         await captureAndSave(session);
@@ -2062,62 +2168,207 @@ const commands = {
 
 'r': async (message, args) => commands['record'](message, args),
 'record': async (message, args) => {
-        if (args[0] === 'stop') {
-            const session = await RecordSession.findOne({ userId: message.author.id });
-            if (!session) return message.reply("❌ 현재 진행 중인 녹화가 없습니다.");
 
+    // ── w!record stop ──────────────────────────────────────────────
+    if (args[0] === 'stop') {
+        const sessions = await RecordSession.find({ userId: message.author.id, isActive: true });
+
+        if (sessions.length === 0) {
+            return message.reply("❌ 현재 진행 중인 녹화가 없습니다.");
+        }
+
+        const artworkSession = sessions.find(s => s.sessionType === 'artwork');
+        const flagSession    = sessions.find(s => s.sessionType === 'flag');
+
+        // 두 가지 녹화 동시 진행 중 → 선택지 제공
+        if (artworkSession && flagSession) {
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`stop_select_artwork_${message.author.id}`)
+                    .setLabel('🎨 작품 타임랩스')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId(`stop_select_flag_${message.author.id}`)
+                    .setLabel('🚩 태극기 녹화')
+                    .setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder()
+                    .setCustomId(`stop_select_cancel_${message.author.id}`)
+                    .setLabel('취소')
+                    .setStyle(ButtonStyle.Danger)
+            );
+            return message.reply({
+                content: "⏺️ 현재 두 개의 녹화가 진행 중입니다. 중지할 녹화를 선택해주세요.",
+                components: [row]
+            });
+        }
+
+        // 작품 녹화만 진행 중
+        if (artworkSession) {
+            const frameCount = artworkSession.frameCount || 0;
             const confirmEmbed = new EmbedBuilder()
-                .setTitle("🎥 녹화 중단 확인")
-                .setDescription("정말 녹화를 중지하시겠습니까?\n지금까지 녹화된 이미지는 MP4로 변환되어 DM으로 전송됩니다.")
+                .setTitle("🎨 작품 타임랩스 중단 확인")
+                .setDescription(
+                    `현재까지 **${frameCount}/2880** 프레임이 녹화되었습니다.\n\n` +
+                    `정말 녹화를 중지하시겠습니까?\n` +
+                    `중지하면 지금까지 녹화된 영상이 DM으로 전송됩니다.`
+                )
                 .setColor(0xFFA500);
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`confirm_stop_artwork_${message.author.id}`).setLabel('✅ 중지').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId(`cancel_stop_record_${message.author.id}`).setLabel('취소').setStyle(ButtonStyle.Secondary)
+            );
+            return message.reply({ embeds: [confirmEmbed], components: [row] });
+        }
 
+        // 태극기 녹화만 진행 중
+        if (flagSession) {
+            const frameCount = flagSession.frameCount || 0;
+            const confirmEmbed = new EmbedBuilder()
+                .setTitle("🎥 태극기 녹화 중단 확인")
+                .setDescription(
+                    `현재까지 **${frameCount}** 프레임이 녹화되었습니다.\n\n` +
+                    `정말 녹화를 중지하시겠습니까?\n` +
+                    `지금까지 녹화된 이미지는 MP4로 변환되어 DM으로 전송됩니다.`
+                )
+                .setColor(0xFFA500);
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('confirm_stop_record').setLabel('확인').setStyle(ButtonStyle.Danger),
                 new ButtonBuilder().setCustomId('cancel_stop_record').setLabel('취소').setStyle(ButtonStyle.Secondary)
             );
-
             return message.reply({ embeds: [confirmEmbed], components: [row] });
         }
+        return;
+    }
 
-        if (args.length < 2) {
-            return message.reply("❌ 사용법: `w!record (지역) (시간)`\n예: `w!record 독도 30m` (최대 24시간)");
+    // ── w!record (tileX) (tileY) (localX) (localY) + 첨부 이미지 ──
+    // 첫 번째 인자가 숫자이면 작품 녹화
+    if (!isNaN(parseInt(args[0]))) {
+        if (args.length < 4) {
+            return message.reply(
+                "❌ 사용법: `w!record (타일X) (타일Y) (로컬X) (로컬Y)` + 도안 이미지 첨부\n" +
+                "예: `w!record 100 200 500 300` (도안 이미지 함께 첨부 필수)\n\n" +
+                "녹화 중지/상태 확인: `w!record stop`"
+            );
         }
 
-        const zone = findZone(args[0]);
-        if (!zone) return message.reply(`❌ '${args[0]}' 구역을 찾을 수 없습니다.`);
+        const tileX  = parseInt(args[0]);
+        const tileY  = parseInt(args[1]);
+        const localX = Math.max(0, Math.min(999, parseInt(args[2])));
+        const localY = Math.max(0, Math.min(999, parseInt(args[3])));
 
-        const durationMs = parseDuration(args[1]);
-        if (!durationMs || durationMs <= 0 || durationMs > MAX_RECORD_DURATION_MS) {
-            return message.reply("❌ 시간 형식이 잘못되었거나 범위를 초과했습니다. (최대 24시간)");
+        if ([tileX, tileY, localX, localY].some(isNaN)) {
+            return message.reply("❌ 좌표는 모두 숫자로 입력해주세요.");
         }
 
-        const existing = await RecordSession.findOne({ userId: message.author.id });
-        if (existing) return message.reply("❌ 이미 녹화를 진행 중입니다.");
+        const imgAttachment = message.attachments.first();
+        if (!imgAttachment || !imgAttachment.contentType?.startsWith('image/')) {
+            return message.reply("❌ 도안 이미지를 함께 첨부해주세요. (PNG, JPG 등)");
+        }
 
-        const endTime = new Date(Date.now() + durationMs);
-        await new RecordSession({
-            userId: message.author.id,
-            zoneName: zone.name,
-            endTime: endTime,
-            guildId: message.guild.id,
-            channelId: message.channel.id
-        }).save();
+        const existingArtwork = await RecordSession.findOne({
+            userId: message.author.id, sessionType: 'artwork', isActive: true
+        });
+        if (existingArtwork) {
+            return message.reply("❌ 이미 작품 타임랩스 녹화가 진행 중입니다. `w!record stop`으로 먼저 중지해주세요.");
+        }
+
+        const statusMsg = await message.reply("🔍 도안을 분석하고 미리보기를 준비하는 중...");
 
         try {
-            const endUnix = Math.floor(endTime.getTime() / 1000);
-            const koreanDuration = durationToKorean(args[1]);
-            await message.author.send(
-                `⏺️ **${zone.name}** 녹화가 시작되었습니다.\n` +
-                `⏱️ **녹화 기간:** ${koreanDuration}\n` +
-                `⏳ **종료 예정:** <t:${endUnix}:R> (<t:${endUnix}:f>)\n\n` +
-                `종료 후 MP4 영상이 이곳으로 전송됩니다.`
+            // 도안 이미지 크기 파악
+            const designRes  = await axios.get(imgAttachment.url, { responseType: 'arraybuffer' });
+            const designMeta = await sharp(Buffer.from(designRes.data)).metadata();
+            const captureWidth  = designMeta.width;
+            const captureHeight = designMeta.height;
+
+            // wplace 해당 영역 실시간 캡처 (미리보기)
+            const previewBuffer     = await captureRegionBuffer(tileX, tileY, localX, localY, captureWidth, captureHeight);
+            const previewAttachment = new AttachmentBuilder(previewBuffer, { name: 'preview.png' });
+
+            const embed = new EmbedBuilder()
+                .setTitle("🎨 작품 타임랩스 — 녹화 영역 확인")
+                .setDescription(
+                    `**위치:** 타일 (${tileX}, ${tileY}), 로컬 (${localX}, ${localY})\n` +
+                    `**캡처 크기:** ${captureWidth} × ${captureHeight} 픽셀\n\n` +
+                    `위 영역으로 녹화를 시작할까요?\n` +
+                    `📌 30초마다 캡처하며, 변화가 없으면 자동으로 건너뜁니다.\n` +
+                    `📌 최대 **2880 프레임** 도달 시 자동 종료됩니다.`
+                )
+                .setColor(0x0099FF)
+                .setImage('attachment://preview.png')
+                .setTimestamp();
+
+            // 대기 중인 세션 임시 저장 (버튼 확인 대기용)
+            pendingArtworkRecords.set(message.author.id, {
+                tileX, tileY, localX, localY, captureWidth, captureHeight
+            });
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`confirm_start_artwork_${message.author.id}`)
+                    .setLabel('✅ 녹화 시작')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId(`cancel_start_artwork_${message.author.id}`)
+                    .setLabel('❌ 취소')
+                    .setStyle(ButtonStyle.Danger)
             );
-            message.reply(`${koreanDuration} 동안 **${zone.name}** 녹화를 진행합니다. 녹화 시작 DM을 전송하였습니다.`);
-        } catch (e) {
-            await cleanupRecord(message.author.id);
-            return message.reply("❌ DM을 보낼 수 없습니다. DM 설정을 확인해주세요.");
+
+            await statusMsg.delete();
+            await message.channel.send({ embeds: [embed], files: [previewAttachment], components: [row] });
+
+        } catch (err) {
+            console.error('record(작품) 오류:', err);
+            await statusMsg.edit(`❌ 미리보기 생성 실패: ${err.message}`);
         }
-    },
+        return;
+    }
+
+    // ── w!record (지역) (시간) — 기존 태극기 녹화 ──────────────────
+    if (args.length < 2) {
+        return message.reply(
+            "❌ 사용법:\n" +
+            "• 작품 타임랩스: `w!record (타일X) (타일Y) (로컬X) (로컬Y)` + 도안 이미지 첨부\n" +
+            "• 태극기 녹화: `w!record (지역) (시간)` (예: `w!record 독도 30m`)\n" +
+            "• 녹화 중지: `w!record stop`"
+        );
+    }
+
+    const zone = findZone(args[0]);
+    if (!zone) return message.reply(`❌ '${args[0]}' 구역을 찾을 수 없습니다.`);
+
+    const durationMs = parseDuration(args[1]);
+    if (!durationMs || durationMs <= 0 || durationMs > MAX_RECORD_DURATION_MS) {
+        return message.reply("❌ 시간 형식이 잘못되었거나 범위를 초과했습니다. (최대 24시간)");
+    }
+
+    const existingFlag = await RecordSession.findOne({ userId: message.author.id, sessionType: 'flag', isActive: true });
+    if (existingFlag) return message.reply("❌ 이미 태극기 녹화를 진행 중입니다.");
+
+    const endTime = new Date(Date.now() + durationMs);
+    await new RecordSession({
+        userId: message.author.id,
+        sessionType: 'flag',
+        zoneName: zone.name,
+        endTime: endTime,
+        isActive: true
+    }).save();
+
+    try {
+        const endUnix = Math.floor(endTime.getTime() / 1000);
+        const koreanDuration = durationToKorean(args[1]);
+        await message.author.send(
+            `⏺️ **${zone.name}** 녹화가 시작되었습니다.\n` +
+            `⏱️ **녹화 기간:** ${koreanDuration}\n` +
+            `⏳ **종료 예정:** <t:${endUnix}:R> (<t:${endUnix}:f>)\n\n` +
+            `종료 후 MP4 영상이 이곳으로 전송됩니다.`
+        );
+        message.reply(`${koreanDuration} 동안 **${zone.name}** 녹화를 진행합니다. 녹화 시작 DM을 전송하였습니다.`);
+    } catch (e) {
+        await cleanupRecord(message.author.id, 'flag');
+        return message.reply("❌ DM을 보낼 수 없습니다. DM 설정을 확인해주세요.");
+    }
+},
     
 };
 
@@ -2305,12 +2556,111 @@ client.on('messageCreate', async (message) => {
 
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
-    if (interaction.customId === 'confirm_stop_record') {
-        await interaction.update({ content: "✅ 녹화 중단됨", embeds: [], components: [] });
-        await RecordSession.updateOne({ userId: interaction.user.id }, { isActive: false });
-        await finalizeRecord(interaction.user.id);
-    } else if (interaction.customId === 'cancel_stop_record') {
+    const cid    = interaction.customId;
+    const userId = interaction.user.id;
+
+    // ── 작품 녹화 시작 확인 버튼 ──────────────────────────────────
+    if (cid === `confirm_start_artwork_${userId}`) {
+        const pending = pendingArtworkRecords.get(userId);
+        if (!pending) {
+            return interaction.update({ content: "❌ 세션이 만료되었습니다. 다시 `w!record` 명령어를 실행해주세요.", embeds: [], components: [] });
+        }
+        pendingArtworkRecords.delete(userId);
+
+        const { tileX, tileY, localX, localY, captureWidth, captureHeight } = pending;
+
+        await new RecordSession({
+            userId, sessionType: 'artwork',
+            tileX, tileY, localX, localY, captureWidth, captureHeight,
+            isActive: true
+        }).save();
+
+        // 최초 1번 프레임 즉시 저장
+        try {
+            const firstFrame = await captureRegionBuffer(tileX, tileY, localX, localY, captureWidth, captureHeight);
+            await new RecordFrame({ userId, sessionType: 'artwork', frameData: firstFrame }).save();
+            await RecordSession.updateOne({ userId, sessionType: 'artwork', isActive: true }, { frameCount: 1 });
+        } catch (e) {
+            console.error('첫 프레임 저장 오류:', e);
+        }
+
+        await interaction.update({
+            content:
+                "⏺️ **작품 타임랩스 녹화가 시작되었습니다!**\n\n" +
+                "📌 **안내:**\n" +
+                "• 30초마다 변화를 감지하여 프레임을 저장합니다.\n" +
+                "• 변화가 없으면 해당 프레임은 자동으로 건너뜁니다.\n" +
+                "• 최대 **2880 프레임** 도달 시 자동 종료됩니다.\n" +
+                "• `w!record stop` 으로 현재 프레임 수 확인 및 중지 가능합니다.\n\n" +
+                "녹화 완료 시 DM으로 MP4 타임랩스 영상을 전송해드립니다. 🎬",
+            embeds: [], files: [], components: []
+        });
+        return;
+    }
+
+    if (cid === `cancel_start_artwork_${userId}`) {
+        pendingArtworkRecords.delete(userId);
+        await interaction.update({ content: "❌ 녹화가 취소되었습니다.", embeds: [], components: [] });
+        return;
+    }
+
+    // ── 작품 녹화 중지 확인 ──────────────────────────────────────
+    if (cid === `confirm_stop_artwork_${userId}`) {
+        await interaction.update({ content: "⏹️ 녹화를 중지하고 영상을 생성합니다...", embeds: [], components: [] });
+        await RecordSession.updateOne({ userId, sessionType: 'artwork', isActive: true }, { isActive: false });
+        await finalizeRecord(userId, 'artwork');
+        return;
+    }
+
+    // ── 두 개 동시 진행 → 선택 버튼 ─────────────────────────────
+    if (cid === `stop_select_artwork_${userId}`) {
+        const s = await RecordSession.findOne({ userId, sessionType: 'artwork', isActive: true });
+        if (!s) return interaction.update({ content: "❌ 진행 중인 작품 녹화를 찾을 수 없습니다.", embeds: [], components: [] });
+        const fc = s.frameCount || 0;
+        const embed = new EmbedBuilder()
+            .setTitle("🎨 작품 타임랩스 중단 확인")
+            .setDescription(`현재까지 **${fc}/2880** 프레임 녹화됨.\n정말 중지하시겠습니까?`)
+            .setColor(0xFFA500);
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`confirm_stop_artwork_${userId}`).setLabel('✅ 중지').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`cancel_stop_record_${userId}`).setLabel('취소').setStyle(ButtonStyle.Secondary)
+        );
+        await interaction.update({ content: null, embeds: [embed], components: [row] });
+        return;
+    }
+
+    if (cid === `stop_select_flag_${userId}`) {
+        const s = await RecordSession.findOne({ userId, sessionType: 'flag', isActive: true });
+        if (!s) return interaction.update({ content: "❌ 진행 중인 태극기 녹화를 찾을 수 없습니다.", embeds: [], components: [] });
+        const fc = s.frameCount || 0;
+        const embed = new EmbedBuilder()
+            .setTitle("🚩 태극기 녹화 중단 확인")
+            .setDescription(`현재까지 **${fc}** 프레임 녹화됨.\n정말 중지하시겠습니까?`)
+            .setColor(0xFFA500);
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('confirm_stop_record').setLabel('✅ 중지').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`cancel_stop_record_${userId}`).setLabel('취소').setStyle(ButtonStyle.Secondary)
+        );
+        await interaction.update({ content: null, embeds: [embed], components: [row] });
+        return;
+    }
+
+    if (cid === `stop_select_cancel_${userId}`) {
         await interaction.update({ content: "⏺️ 녹화 계속 진행", embeds: [], components: [] });
+        return;
+    }
+
+    // ── 기존 태극기 녹화 중지 확인 (하위 호환 유지) ──────────────
+    if (cid === 'confirm_stop_record') {
+        await interaction.update({ content: "✅ 녹화 중단됨", embeds: [], components: [] });
+        await RecordSession.updateOne({ userId, sessionType: 'flag', isActive: true }, { isActive: false });
+        await finalizeRecord(userId, 'flag');
+        return;
+    }
+
+    if (cid === 'cancel_stop_record' || cid === `cancel_stop_record_${userId}`) {
+        await interaction.update({ content: "⏺️ 녹화 계속 진행", embeds: [], components: [] });
+        return;
     }
 });
 
