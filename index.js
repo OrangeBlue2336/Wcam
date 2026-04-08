@@ -22,6 +22,12 @@ const RECORD_FPS = 30; // 수정이 용이하도록 상단에 배치
 const MAX_RECORD_DURATION_MS = 24 * 60 * 60 * 1000; // 최대 24시간
 const CAPTURE_INTERVAL_MS = 30000; // 30초마다 캡처 (기존 감시 주기와 동일하게 설정)
 
+// ========================================
+// 영상 인코딩 대기열 (큐) 설정
+// ========================================
+const encodeQueue = [];
+let isEncoding = false;
+
 const chartJSNodeCanvas = new ChartJSNodeCanvas({ 
     width: 1600, 
     height: 800,
@@ -481,7 +487,8 @@ async function captureRegionBuffer(tileX, tileY, localX, localY, width, height) 
 
     return await sharp({
         create: { width: totalWidth, height: totalHeight, channels: 4,
-                  background: { r: 0, g: 0, b: 0, alpha: 0 } }
+                  // 투명 배경을 지정된 색상(#aabdf9)으로 채우고 불투명하게(alpha: 1) 설정
+                  background: { r: 170, g: 189, b: 249, alpha: 1 } }
     }).composite(composites).png().toBuffer();
 }
 
@@ -547,6 +554,36 @@ async function captureAndSave(session) {
 }
 
 async function finalizeRecord(userId, sessionType = 'flag') {
+    // 요청을 큐에 밀어넣고 큐 처리기 실행
+    encodeQueue.push({ userId, sessionType });
+    console.log(`📥 [인코딩 큐 추가] ${userId} (${sessionType}) - 대기열: ${encodeQueue.length}개`);
+    processEncodeQueue();
+}
+
+async function processEncodeQueue() {
+    // 이미 인코딩 중이거나 대기열이 비어있으면 조용히 대기
+    if (isEncoding || encodeQueue.length === 0) return;
+    isEncoding = true;
+
+    const { userId, sessionType } = encodeQueue.shift();
+    console.log(`▶️ [인코딩 시작] ${userId}(${sessionType}) 처리 중...`);
+
+    try {
+        // 이름을 바꾼 실제 인코딩 함수 호출
+        await performFinalizeRecord(userId, sessionType);
+    } catch (error) {
+        console.error(`❌ [인코딩 프로세스 오류] ${userId}:`, error);
+    }
+
+    // 인코딩 완료 후 서버 메모리/CPU 열을 식히기 위해 30초 대기
+    console.log(`⏳ [인코딩 대기] 서버 부하 방지를 위해 30초 대기합니다... (남은 대기열: ${encodeQueue.length}개)`);
+    setTimeout(() => {
+        isEncoding = false;
+        processEncodeQueue(); // 대기열에 남은 게 있는지 다시 확인
+    }, 30000); // 30초
+}
+
+async function performFinalizeRecord(userId, sessionType = 'flag') {
     const session = await RecordSession.findOne({ userId, sessionType });
     if (!session) return;
 
@@ -601,9 +638,18 @@ async function finalizeRecord(userId, sessionType = 'flag') {
         const outputPath = path.join(tmpDir, 'output.mp4');
         const inputPattern = path.join(tmpDir, 'frame_%05d.png');
 
+        // 🔥 유동적 프레임레이트 계산
+        let currentFps = RECORD_FPS; // 기본 30FPS
+        if (totalFrames < 60) {
+            currentFps = 10;
+        } else if (totalFrames < 150) {
+            currentFps = 15;
+        }
+        console.log(`🎞️ [MP4 프레임레이트] 총 ${totalFrames}프레임 -> ${currentFps}FPS 적용`);
+
         await new Promise((resolve, reject) => {
             const ffmpeg = spawn('ffmpeg', [
-                '-framerate', String(RECORD_FPS),
+                '-framerate', String(currentFps), // 계산된 FPS 적용
                 '-i', inputPattern,
                 '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', // 가로/세로가 홀수인 경우 짝수로 패딩
                 '-c:v', 'libx264',       // H.264 코덱
@@ -1286,9 +1332,10 @@ const commands = {
                 { name: 'w!status', value: '현재 봇의 상태와 설정을 확인합니다.', inline: false },
                 { name: 'w!flag [지역]', value: '특정 지역의 실시간 상태를 확인합니다.\n예: `w!flag 독도`', inline: false },
                 { name: 'w!history [지역]', value: '최근 30분간 해당 지점의 일치율 변화 그래프를 출력합니다.\n예: `w!history 독도`', inline: false },
-                { name: 'w!record [지역] [시간]', value: '해당 지역을 지정한 시간동안 녹화하여 MP4 영상으로 제공합니다. (최대 24시간)\n• `w!record 독도 1h` - 1시간 동안 독도 녹화\n• `w!record stop` - 녹화 중지', inline: false },
-                { name: 'w!help', value: '이 도움말을 표시합니다.', inline: false },
-                
+                { name: 'w!record (지역) (시간)', value: '특정 지역을 지정한 시간동안 녹화합니다. (최대 24시간)\n예: `w!record 독도 1h`', inline: false },
+                { name: 'w!record (타일X) (타일Y) (로컬X) (로컬Y)', value: '원하는 영역의 작품 타임랩스를 녹화합니다. **(반드시 도안 이미지 첨부 필요)**\n예: `w!record 100 200 500 300`\n※ 30초마다 변화를 감지해 자동 저장합니다.', inline: false },
+                { name: 'w!record stop', value: '진행 중인 녹화를 중지하고 녹화된 프레임 수를 확인, 타임랩스 영상을 생성합니다.', inline: false },
+                { name: 'w!help', value: '이 도움말을 표시합니다.', inline: false }
             )
             .setFooter({ text: '💡 화살표 버튼으로 페이지 이동' })
             .setTimestamp(),
@@ -2562,6 +2609,19 @@ client.on('interactionCreate', async (interaction) => {
 
     // ── 작품 녹화 시작 확인 버튼 ──────────────────────────────────
     if (cid === `confirm_start_artwork_${userId}`) {
+        
+        // 버튼을 누른 시점에 DB를 2차로 확인하여 이미 녹화가 시작된 경우 중복 시작 방지
+        const existingArtwork = await RecordSession.findOne({
+            userId, sessionType: 'artwork', isActive: true
+        });
+        if (existingArtwork) {
+            pendingArtworkRecords.delete(userId); // 찌꺼기 정리
+            return interaction.update({ 
+                content: "❌ 이미 작품 타임랩스 녹화가 진행 중입니다. 기존 녹화를 먼저 중지해주세요.",
+                embeds: [], components: [] 
+            });
+        }
+
         const pending = pendingArtworkRecords.get(userId);
         if (!pending) {
             return interaction.update({ content: "❌ 세션이 만료되었습니다. 다시 `w!record` 명령어를 실행해주세요.", embeds: [], components: [] });
