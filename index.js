@@ -80,7 +80,9 @@ function validateApiKey(req, res, next) {
 // ========================================
 // 1. 환경 변수 설정 (Render에서 설정할 것들)
 // ========================================
-const MONGODB_URI = process.env.MONGODB_URI || '';
+const MONGODB_URI = (process.env.NODE_ENV === 'development')
+    ? (process.env.MONGODB_URI_DEV || process.env.MONGODB_URI || '')
+    : (process.env.MONGODB_URI || '');
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const KOYEB_URL = process.env.KOYEB_PUBLIC_DOMAIN
     ? `https://${process.env.KOYEB_PUBLIC_DOMAIN}`
@@ -746,7 +748,6 @@ async function cleanupRecord(userId, sessionType = 'flag') {
 }
 
 async function processRecordings() {
-    if (IS_DEV) return;
 
     const now = new Date();
     const activeSessions = await RecordSession.find({ isActive: true });
@@ -2217,6 +2218,77 @@ const commands = {
 'r': async (message, args) => commands['record'](message, args),
 'record': async (message, args) => {
 
+    // ── w!record test (개발자 전용 스트레스 테스트) ────────────────────
+if (args[0] === 'test') {
+    if (message.author.id !== DEVELOPER_ID) {
+        return message.reply('❌ 이 명령어는 개발자만 사용할 수 있습니다.');
+    }
+
+    // 기존 테스트 세션 잔여물 정리
+    await cleanupRecord(message.author.id, 'flag');
+
+    const statusMsg = await message.reply('🧪 **[녹화 스트레스 테스트]** 독도 태극기 프레임 캡처 중...');
+
+    try {
+        const zone = monitorZones.find(z => z.name === '독도 태극기');
+        if (!zone) return statusMsg.edit('❌ 독도 태극기 구역을 찾을 수 없습니다.');
+
+        // ① 현재 독도 태극기 프레임 1장 캡처
+        const response = await axios.get(zone.tileUrl, { responseType: 'arraybuffer' });
+        const frameBuffer = await sharp(Buffer.from(response.data))
+            .extract({ left: zone.x, top: zone.y, width: zone.width, height: zone.height })
+            .toBuffer();
+
+        await statusMsg.edit('🧪 **[녹화 스트레스 테스트]** 프레임 2880장 DB 저장 중...');
+
+        // ② RecordSession 생성 (이미 완료된 상태로)
+        await new RecordSession({
+            userId: message.author.id,
+            sessionType: 'flag',
+            zoneName: zone.name,
+            frameCount: 2880,
+            endTime: new Date(),
+            isActive: false
+        }).save();
+
+        // ③ 프레임 2880장 배치 삽입 (100개씩)
+        const TEST_FRAME_COUNT = 2880;
+        const BATCH_SIZE = 100;
+        const baseTime = new Date();
+        let inserted = 0;
+
+        for (let i = 0; i < TEST_FRAME_COUNT; i += BATCH_SIZE) {
+            const batch = [];
+            const end = Math.min(i + BATCH_SIZE, TEST_FRAME_COUNT);
+            for (let j = i; j < end; j++) {
+                batch.push({
+                    userId: message.author.id,
+                    sessionType: 'flag',
+                    frameData: frameBuffer,
+                    timestamp: new Date(baseTime.getTime() + j * 30000) // 30초 간격 시뮬레이션
+                });
+            }
+            await RecordFrame.insertMany(batch);
+            inserted += batch.length;
+
+            // 500장마다 진행상황 업데이트
+            if (inserted % 500 === 0 || inserted === TEST_FRAME_COUNT) {
+                await statusMsg.edit(`🧪 **[녹화 스트레스 테스트]** 프레임 저장 중... (${inserted}/${TEST_FRAME_COUNT})`);
+            }
+        }
+
+        await statusMsg.edit('🧪 **[녹화 스트레스 테스트]** 저장 완료! 인코딩 큐에 추가합니다...');
+        console.log(`🧪 [TEST] ${message.author.id} - 테스트 프레임 2880장 저장 완료, 인코딩 시작`);
+
+        // ④ 실제 녹화와 동일하게 인코딩 실행
+        await finalizeRecord(message.author.id, 'flag');
+
+    } catch (err) {
+        console.error('record test 오류:', err);
+        await statusMsg.edit(`❌ 테스트 중 오류 발생: ${err.message}`);
+    }
+    return;
+}
     // ── w!record stop ──────────────────────────────────────────────
     if (args[0] === 'stop') {
         const sessions = await RecordSession.find({ userId: message.author.id, isActive: true });
@@ -2652,6 +2724,7 @@ client.on('interactionCreate', async (interaction) => {
                 "• 30초마다 변화를 감지하여 프레임을 저장합니다.\n" +
                 "• 변화가 없으면 해당 프레임은 자동으로 건너뜁니다.\n" +
                 "• 최대 **2880 프레임** 도달 시 자동 종료됩니다.\n" +
+                "• 기본 배경색은 바다색으로 설정됩니다.\n" +
                 "• `w!record stop` 으로 현재 프레임 수 확인 및 중지 가능합니다.\n\n" +
                 "녹화 완료 시 DM으로 MP4 타임랩스 영상을 전송해드립니다. 🎬",
             embeds: [], files: [], components: []
