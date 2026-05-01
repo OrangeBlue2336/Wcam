@@ -534,10 +534,10 @@ async function captureAndSave(session) {
         await RecordSession.updateOne({ _id: session._id }, { frameCount: newCount });
         console.log(`📸 녹화 ${session.userId}(${session.sessionType}) - ${newCount}프레임 저장됨`);
 
-        // 작품 녹화: 720 프레임 도달 시 자동 종료
-        if (session.sessionType === 'artwork' && newCount >= 720) {
+        // 작품 녹화: 2880 프레임 도달 시 자동 종료
+        if (session.sessionType === 'artwork' && newCount >= 2880) {
             await RecordSession.updateOne({ _id: session._id }, { isActive: false });
-            console.log(`🎬 최대 프레임(720) 도달 - 자동 종료 (${session.userId})`);
+            console.log(`🎬 최대 프레임(2880) 도달 - 자동 종료 (${session.userId})`);
             finalizeRecord(session.userId, 'artwork');
         }
     } catch (error) {
@@ -2347,7 +2347,7 @@ if (args[0] === 'test') {
             const confirmEmbed = new EmbedBuilder()
                 .setTitle("🎨 작품 타임랩스 중단 확인")
                 .setDescription(
-                    `현재까지 **${frameCount}/720** 프레임이 녹화되었습니다.\n\n` +
+                    `현재까지 **${frameCount}/2880** 프레임이 녹화되었습니다.\n\n` +
                     `정말 녹화를 중지하시겠습니까?\n` +
                     `중지하면 지금까지 녹화된 영상이 DM으로 전송됩니다.`
                 )
@@ -2431,7 +2431,7 @@ if (args[0] === 'test') {
                     `**캡처 크기:** ${captureWidth} × ${captureHeight} 픽셀\n\n` +
                     `위 영역으로 녹화를 시작할까요?\n` +
                     `📌 30초마다 캡처하며, 변화가 없으면 자동으로 건너뜁니다.\n` +
-                    `📌 최대 **720 프레임** 도달 시 자동 종료됩니다.\n` +
+                    `📌 최대 **2880 프레임** 도달 시 자동 종료됩니다.\n` +
                     `📌 기본 배경색은 바다색으로 설정됩니다.`
                 )
                 .setColor(0x0099FF)
@@ -2743,7 +2743,7 @@ client.on('interactionCreate', async (interaction) => {
                 "📌 **안내:**\n" +
                 "• 30초마다 변화를 감지하여 프레임을 저장합니다.\n" +
                 "• 변화가 없으면 해당 프레임은 자동으로 건너뜁니다.\n" +
-                "• 최대 **720 프레임** 도달 시 자동 종료됩니다.\n" +
+                "• 최대 **2880 프레임** 도달 시 자동 종료됩니다.\n" +
                 "• `w!record stop` 으로 현재 프레임 수 확인 및 중지 가능합니다.\n\n" +
                 "녹화 완료 시 DM으로 MP4 타임랩스 영상을 전송해드립니다. 🎬",
             embeds: [], files: [], components: []
@@ -2778,7 +2778,7 @@ client.on('interactionCreate', async (interaction) => {
         const fc = s.frameCount || 0;
         const embed = new EmbedBuilder()
             .setTitle("🎨 작품 타임랩스 중단 확인")
-            .setDescription(`현재까지 **${fc}/720** 프레임 녹화됨.\n정말 중지하시겠습니까?`)
+            .setDescription(`현재까지 **${fc}/2880** 프레임 녹화됨.\n정말 중지하시겠습니까?`)
             .setColor(0xFFA500);
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`confirm_stop_artwork_${userId}`).setLabel('✅ 중지').setStyle(ButtonStyle.Danger),
