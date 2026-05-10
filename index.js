@@ -185,6 +185,9 @@ const RecordFrameSchema = new mongoose.Schema({
     frameData: Buffer,
     timestamp: { type: Date, default: Date.now }
 });
+
+RecordFrameSchema.index({ userId: 1, sessionType: 1, timestamp: 1 });
+
 const RecordFrame = mongoose.model('RecordFrame', RecordFrameSchema);
 
 // ========================================
