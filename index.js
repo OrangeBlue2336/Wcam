@@ -353,7 +353,7 @@ const monitorZones = [
         name: "백두산 태극기",
         tileUrl: "https://backend.wplace.live/files/s0/tiles/1752/760.png",
         originalPath: "./assets/ref_baekdu.png",
-        x: 374, y: 111, width: 204, height: 159,
+        x: 367, y: 38, width: 238, height: 338,
         wplaceUrl: "https://wplace.live/?lat=42.00718311351218&lng=128.05373990302732&zoom=13.726827756600123"
     }
 ];
