@@ -12,6 +12,7 @@ const { spawn } = require('child_process');
 const os = require('os');
 const mongoose = require('mongoose');
 const path = require('path');
+const crypto = require('crypto'); // 녹화 세션 복구용 고유 ID 생성에 사용
 const { registerFont, createCanvas, loadImage } = require('canvas');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
 
@@ -164,6 +165,7 @@ const pendingArtworkRecords = new Map();
 const RecordSessionSchema = new mongoose.Schema({
     userId: { type: String, required: true, index: true },
     sessionType: { type: String, enum: ['flag', 'artwork'], default: 'flag' },
+    sessionId: { type: String, index: true }, // 복구용 고유 ID (w!record recover 명령어에 사용)
     zoneName: String,          // 태극기 녹화 전용
     tileX: Number,             // 작품 녹화 전용
     tileY: Number,
@@ -174,8 +176,17 @@ const RecordSessionSchema = new mongoose.Schema({
     frameCount: { type: Number, default: 0 },
     startTime: { type: Date, default: Date.now },
     endTime: Date,
-    isActive: { type: Boolean, default: true }
+    isActive: { type: Boolean, default: true },
+    needsRecovery: { type: Boolean, default: false }, // 인코딩/전송 중 오류로 중단되어 복구 대기 중인지 여부
+    commandChannelId: String,   // 녹화를 시작한 채널 (자동 종료 시 상태 메시지를 보낼 곳)
+    statusChannelId: String,    // "영상을 생성합니다..." 등 진행 상황을 표시 중인 메시지의 채널
+    statusMessageId: String     // 위 메시지의 ID (DM 대신 이 메시지를 수정해서 결과/오류를 안내함)
 });
+
+// 짧고 사람이 입력하기 쉬운 복구용 세션 ID 생성 (예: A1B2C3D4)
+function generateSessionId() {
+    return crypto.randomBytes(4).toString('hex').toUpperCase();
+}
 const RecordSession = mongoose.model('RecordSession', RecordSessionSchema);
 
 // 녹화 프레임 데이터 (이미지 바이너리 저장)
@@ -539,9 +550,21 @@ async function captureAndSave(session) {
 
         // 작품 녹화: 2880 프레임 도달 시 자동 종료
         if (session.sessionType === 'artwork' && newCount >= 2880) {
-            await RecordSession.updateOne({ _id: session._id }, { isActive: false });
+            const updatedSession = await RecordSession.findOneAndUpdate(
+                { _id: session._id },
+                { isActive: false },
+                { new: true }
+            );
             console.log(`🎬 최대 프레임(2880) 도달 - 자동 종료 (${session.userId})`);
-            finalizeRecord(session.userId, 'artwork');
+            if (updatedSession?.commandChannelId) {
+                await createStatusMessageAndFinalize(
+                    updatedSession,
+                    updatedSession.commandChannelId,
+                    "⏹️ 최대 프레임(2880)에 도달하여 녹화를 자동 종료하고 영상을 생성합니다..."
+                );
+            } else {
+                finalizeRecord(session.userId, 'artwork');
+            }
         }
     } catch (error) {
         console.error(`❌ 녹화 오류 (${session.userId}):`, error.message);
@@ -553,6 +576,38 @@ async function finalizeRecord(userId, sessionType = 'flag') {
     encodeQueue.push({ userId, sessionType });
     console.log(`📥 [인코딩 큐 추가] ${userId} (${sessionType}) - 대기열: ${encodeQueue.length}개`);
     processEncodeQueue();
+}
+
+// ── 진행 상황/오류 안내를 DM이 아니라 "채팅 메시지 수정"으로 전달하기 위한 헬퍼들 ──
+// DM은 유저 설정에 따라 막혀있을 수 있으므로, 인코딩 진행 상황과 오류(복구 안내 포함)는
+// 이 상태 메시지를 통해 전달한다. (완성된 영상 파일 전송만 예외적으로 DM을 사용)
+
+// 특정 세션에 연결된 상태 메시지를 최신 내용으로 수정
+async function updateStatusMessage(session, content) {
+    if (!session?.statusChannelId || !session?.statusMessageId) return;
+    try {
+        const channel = await client.channels.fetch(session.statusChannelId);
+        const msg = await channel.messages.fetch(session.statusMessageId);
+        await msg.edit(content);
+    } catch (e) {
+        console.error(`상태 메시지 수정 실패 (${session.userId}):`, e.message);
+    }
+}
+
+// 상호작용(버튼) 없이 자동으로 종료되는 녹화(시간 만료, 최대 프레임 도달, 테스트, 복구 등)를 위해
+// 새 상태 메시지를 보내고 세션에 연결한 뒤 인코딩을 큐에 넣는다.
+async function createStatusMessageAndFinalize(session, channelId, initialContent) {
+    try {
+        const channel = await client.channels.fetch(channelId);
+        const msg = await channel.send(initialContent);
+        await RecordSession.updateOne(
+            { _id: session._id },
+            { statusChannelId: channel.id, statusMessageId: msg.id }
+        );
+    } catch (e) {
+        console.error(`상태 메시지 생성 실패 (${session.userId}):`, e.message);
+    }
+    finalizeRecord(session.userId, session.sessionType);
 }
 
 async function processEncodeQueue() {
@@ -591,7 +646,7 @@ async function performFinalizeRecord(userId, sessionType = 'flag') {
         const user = await client.users.fetch(userId);
 
         if (totalFrames === 0) {
-            await user.send("⚠️ 녹화된 프레임이 없어 영상을 생성할 수 없습니다.");
+            await updateStatusMessage(session, "⚠️ 녹화된 프레임이 없어 영상을 생성할 수 없습니다.");
             await cleanupRecord(userId, sessionType);
             return;
         }
@@ -601,7 +656,7 @@ async function performFinalizeRecord(userId, sessionType = 'flag') {
         const filePrefix = session.sessionType === 'artwork' ? 'artwork_timelapse' : `record_${session.zoneName}`;
 
         console.log(`🎞️ [MP4 생성 시작] ${userId} - 총 ${totalFrames}프레임`);
-        await user.send(`⏳ **${displayTitle}** 영상 생성을 시작합니다. (총 ${totalFrames}프레임)\n프레임 수가 많을 경우 시간이 걸릴 수 있습니다.`);
+        await updateStatusMessage(session, `⏳ **${displayTitle}** 영상 생성을 시작합니다... (총 ${totalFrames}프레임)\n프레임 수가 많을 경우 시간이 걸릴 수 있습니다.`);
 
         // 프레임을 50개씩 꺼내서 임시 폴더에 PNG 파일로 저장
         const frameIds = await RecordFrame.find({ userId, sessionType })
@@ -672,7 +727,7 @@ async function performFinalizeRecord(userId, sessionType = 'flag') {
 
         if (fileSizeMB > 24) {
             console.log(`⚠️ [MP4 용량 초과] ${userId} - ${fileSizeMB.toFixed(1)}MB. 재압축 시도.`);
-            await user.send(`⚠️ 영상 용량이 커서(${fileSizeMB.toFixed(1)}MB) 전송 한도를 초과했습니다. 화질을 낮춰 재압축을 시도합니다. 잠시만 기다려주세요...`);
+            await updateStatusMessage(session, `⚠️ 영상 용량이 커서(${fileSizeMB.toFixed(1)}MB) 전송 한도를 초과했습니다. 화질을 낮춰 재압축을 시도합니다. 잠시만 기다려주세요...`);
 
             const compressedOutputPath = path.join(tmpDir, 'output_compressed.mp4');
 
@@ -697,27 +752,39 @@ async function performFinalizeRecord(userId, sessionType = 'flag') {
 
             if (newFileSizeMB > 24) {
                 // 재압축 후에도 24MB를 넘으면 최종 포기
-                await user.send(
+                await updateStatusMessage(session,
                     `❌ 재압축을 진행했으나 파일이 여전히 너무 큽니다(${newFileSizeMB.toFixed(1)}MB).\n` +
                     `녹화 시간을 조금 더 짧게 설정해주세요.`
                 );
+                await cleanupRecord(userId, sessionType);
+                return;
             } else {
-                // 재압축 성공 시 전송
+                // 재압축 성공 시 전송 (파일 전송은 원 녹화자에게만 DM으로)
                 const attachment = new AttachmentBuilder(compressedOutputPath, { name: `${filePrefix}_compressed.mp4` });
-                await user.send({
-                    content: `✅ **${displayTitle}** 녹화가 완료되었습니다! (압축됨, ${newFileSizeMB.toFixed(1)}MB)`,
-                    files: [attachment]
-                });
+                try {
+                    await user.send({
+                        content: `✅ **${displayTitle}** 녹화가 완료되었습니다! (압축됨, ${newFileSizeMB.toFixed(1)}MB)`,
+                        files: [attachment]
+                    });
+                } catch (dmErr) {
+                    throw new Error(`DM_SEND_FAILED:${dmErr.message}`);
+                }
                 console.log(`✅ [MP4 재압축 전송 완료] ${userId}`);
+                await updateStatusMessage(session, `✅ **${displayTitle}** 녹화가 완료되어 DM으로 전송되었습니다! (압축됨, ${newFileSizeMB.toFixed(1)}MB)`);
             }
         } else {
-            // 원본이 24MB 이하일 경우 정상 전송 (기존 로직)
+            // 원본이 24MB 이하일 경우 정상 전송 (파일 전송은 원 녹화자에게만 DM으로)
             const attachment = new AttachmentBuilder(outputPath, { name: `${filePrefix}.mp4` });
-            await user.send({
-                content: `✅ **${displayTitle}** 녹화가 완료되었습니다! (총 ${totalFrames}프레임, ${fileSizeMB.toFixed(1)}MB)`,
-                files: [attachment]
-            });
+            try {
+                await user.send({
+                    content: `✅ **${displayTitle}** 녹화가 완료되었습니다! (총 ${totalFrames}프레임, ${fileSizeMB.toFixed(1)}MB)`,
+                    files: [attachment]
+                });
+            } catch (dmErr) {
+                throw new Error(`DM_SEND_FAILED:${dmErr.message}`);
+            }
             console.log(`✅ [MP4 전송 완료] ${userId}`);
+            await updateStatusMessage(session, `✅ **${displayTitle}** 녹화가 완료되어 DM으로 전송되었습니다! (총 ${totalFrames}프레임, ${fileSizeMB.toFixed(1)}MB)`);
         }
 
         // ── 작품 녹화 완료 시 개발자에게 사본 전송 ──────────────────
@@ -749,24 +816,70 @@ async function performFinalizeRecord(userId, sessionType = 'flag') {
             }
         }
 
+        // ✅ 여기까지 도달했다면 영상 생성 및 전송이 모두 성공한 것 → 이때만 프레임/세션 삭제
+        await cleanupRecord(userId, sessionType);
+
     } catch (error) {
+        // ❌ 인코딩, 전송(DM 실패 등), 그 외 어떤 오류든 여기서 잡힘
+        // → 프레임과 세션은 절대 삭제하지 않고 needsRecovery 플래그만 세워서 보존한다.
         console.error(`❌ [MP4 생성 오류] ${userId}:`, error);
-        const user = await client.users.fetch(userId).catch(() => null);
-        if (user) await user.send("❌ 영상 생성 중 오류가 발생했습니다.");
+        try {
+            await RecordSession.updateOne({ _id: session._id }, { needsRecovery: true, isActive: false });
+        } catch (dbErr) {
+            console.error('needsRecovery 플래그 저장 실패:', dbErr);
+        }
+
+        const recoveryId = session.sessionId || '(ID 없음 - 개발자 문의 필요)';
+        const isDmFail = typeof error.message === 'string' && error.message.startsWith('DM_SEND_FAILED');
+
+        // ⚠️ DM으로 안내하지 않는다 (DM이 막혀있을 수 있으므로).
+        // 대신 "녹화를 중지하고 영상을 생성합니다..." 메시지를 그대로 수정해서 안내한다.
+        const errorNotice = isDmFail
+            ? `❌ 영상 생성은 완료됐지만 **DM 전송에 실패**했습니다. (DM이 막혀있을 수 있습니다)\n` +
+              `설정에서 서버 멤버의 DM 수신을 허용한 뒤 아래 명령어로 다시 시도해주세요.`
+            : `❌ 영상 생성 중 오류가 발생했습니다. (${error.message})`;
+
+        await updateStatusMessage(session,
+            `${errorNotice}\n` +
+            `✅ 녹화된 프레임은 삭제되지 않고 안전하게 보존되었습니다.\n\n` +
+            `🔁 아래 명령어로 언제든 다시 시도할 수 있습니다:\n` +
+            `\`w!record recover ${recoveryId}\``
+        );
     } finally {
-        // 임시 파일 전부 삭제
+        // 임시 작업 폴더(디스크에 잠깐 풀어놓은 PNG들)만 삭제. 원본 프레임은 DB에 그대로 남아있음.
         try {
             fs.rmSync(tmpDir, { recursive: true, force: true });
         } catch (e) {
             console.error('임시 파일 삭제 실패:', e);
         }
-        await cleanupRecord(userId, sessionType);
     }
 }
 
 async function cleanupRecord(userId, sessionType = 'flag') {
     await RecordSession.deleteOne({ userId, sessionType });
     await RecordFrame.deleteMany({ userId, sessionType });
+}
+
+// 이번 업데이트 이전(sessionId 필드가 없던 시절)에 시작된 녹화 세션에도
+// ID를 부여해서, 재시작 이후 오류가 나도 w!record recover로 복구 가능하게 한다.
+async function migrateLegacySessionIds() {
+    try {
+        const legacySessions = await RecordSession.find({
+            $or: [{ sessionId: { $exists: false } }, { sessionId: null }, { sessionId: '' }]
+        });
+
+        for (const s of legacySessions) {
+            s.sessionId = generateSessionId();
+            await s.save();
+            console.log(`🆔 [세션 ID 부여] ${s.userId}(${s.sessionType}) → ${s.sessionId}`);
+        }
+
+        if (legacySessions.length > 0) {
+            console.log(`🆔 [마이그레이션 완료] 기존 세션 ${legacySessions.length}개에 ID 부여됨`);
+        }
+    } catch (e) {
+        console.error('세션 ID 마이그레이션 실패:', e);
+    }
 }
 
 async function processRecordings() {
@@ -777,8 +890,20 @@ async function processRecordings() {
     for (const session of activeSessions) {
         // 태극기 녹화: 시간 기반 자동 종료
         if (session.sessionType === 'flag' && session.endTime && now >= session.endTime) {
-            await RecordSession.updateOne({ _id: session._id }, { isActive: false });
-            finalizeRecord(session.userId, 'flag');
+            const updatedSession = await RecordSession.findOneAndUpdate(
+                { _id: session._id },
+                { isActive: false },
+                { new: true }
+            );
+            if (updatedSession?.commandChannelId) {
+                await createStatusMessageAndFinalize(
+                    updatedSession,
+                    updatedSession.commandChannelId,
+                    "⏹️ 녹화 시간이 종료되어 영상을 생성합니다..."
+                );
+            } else {
+                finalizeRecord(session.userId, 'flag');
+            }
             continue;
         }
         await captureAndSave(session);
@@ -1358,6 +1483,7 @@ const commands = {
                 { name: 'w!record (지역) (시간)', value: '특정 지역을 지정한 시간동안 녹화합니다. (최대 24시간)\n예: `w!record 독도 1h`', inline: false },
                 { name: 'w!record (타일X) (타일Y) (로컬X) (로컬Y)', value: '원하는 영역의 작품 타임랩스를 녹화합니다. **(반드시 도안 이미지 첨부 필요)**\n예: `w!record 100 200 500 300`\n※ 30초마다 변화를 감지해 자동 저장합니다.', inline: false },
                 { name: 'w!record stop', value: '진행 중인 녹화를 중지하고 녹화된 프레임 수를 확인, 타임랩스 영상을 생성합니다.', inline: false },
+                { name: 'w!record recover (ID)', value: '영상 생성/전송 중 오류로 중단된 녹화를 복구합니다. (오류 발생 시 DM으로 안내되는 ID 사용)', inline: false },
                 { name: 'w!help', value: '이 도움말을 표시합니다.', inline: false }
             )
             .setFooter({ text: '💡 화살표 버튼으로 페이지 이동' })
@@ -2264,13 +2390,17 @@ if (args[0] === 'test') {
         await statusMsg.edit('🧪 **[녹화 스트레스 테스트]** 프레임 2880장 DB 저장 중...');
 
         // ② RecordSession 생성 (이미 완료된 상태로)
-        await new RecordSession({
+        const testSession = await new RecordSession({
             userId: message.author.id,
             sessionType: 'flag',
+            sessionId: generateSessionId(),
             zoneName: zone.name,
             frameCount: 2880,
             endTime: new Date(),
-            isActive: false
+            isActive: false,
+            commandChannelId: message.channel.id,
+            statusChannelId: message.channel.id,
+            statusMessageId: statusMsg.id
         }).save();
 
         // ③ 프레임 2880장 배치 삽입 (100개씩)
@@ -2311,6 +2441,41 @@ if (args[0] === 'test') {
     }
     return;
 }
+    // ── w!record recover (ID) — 오류로 중단된 녹화 복구 ──────────────
+    if (args[0] === 'recover') {
+        const targetId = (args[1] || '').trim().toUpperCase();
+        if (!targetId) {
+            return message.reply("❌ 사용법: `w!record recover (ID)`\n(ID는 오류 발생 시 상태 메시지에 안내된 코드입니다)");
+        }
+
+        // 🔒 본인이 시작한 녹화만 복구 가능 (userId가 일치하지 않으면 조회 자체가 안 됨 → 타인 영상이 전송될 수 없음)
+        const session = await RecordSession.findOne({
+            userId: message.author.id,
+            sessionId: targetId,
+            needsRecovery: true
+        });
+
+        if (!session) {
+            return message.reply(`❌ ID \`${targetId}\`에 해당하는, 본인이 시작한 복구 대기 중인 녹화를 찾을 수 없습니다.`);
+        }
+
+        const frameCount = await RecordFrame.countDocuments({ userId: message.author.id, sessionType: session.sessionType });
+        if (frameCount === 0) {
+            return message.reply(`❌ 복구할 프레임이 남아있지 않습니다. (ID: \`${targetId}\`)`);
+        }
+
+        const statusMsg = await message.reply(
+            `🔁 복구를 시작합니다. (ID: \`${targetId}\`, 프레임 ${frameCount}개)\n` +
+            `이 메시지가 진행 상황/완료 안내로 갱신됩니다.`
+        );
+        await RecordSession.updateOne(
+            { _id: session._id },
+            { needsRecovery: false, statusChannelId: message.channel.id, statusMessageId: statusMsg.id }
+        );
+        finalizeRecord(session.userId, session.sessionType);
+        return;
+    }
+
     // ── w!record stop ──────────────────────────────────────────────
     if (args[0] === 'stop') {
         const sessions = await RecordSession.find({ userId: message.author.id, isActive: true });
@@ -2414,6 +2579,16 @@ if (args[0] === 'test') {
             return message.reply("❌ 이미 작품 타임랩스 녹화가 진행 중입니다. `w!record stop`으로 먼저 중지해주세요.");
         }
 
+        const recoveryPendingArtwork = await RecordSession.findOne({
+            userId: message.author.id, sessionType: 'artwork', needsRecovery: true
+        });
+        if (recoveryPendingArtwork) {
+            return message.reply(
+                `❌ 이전 작품 녹화(ID: \`${recoveryPendingArtwork.sessionId}\`)가 영상 생성 중 오류로 중단되어 복구 대기 중입니다.\n` +
+                `먼저 \`w!record recover ${recoveryPendingArtwork.sessionId}\` 명령어로 복구를 시도해주세요.`
+            );
+        }
+
         const statusMsg = await message.reply("🔍 도안을 분석하고 미리보기를 준비하는 중...");
 
         try {
@@ -2488,13 +2663,23 @@ if (args[0] === 'test') {
     const existingFlag = await RecordSession.findOne({ userId: message.author.id, sessionType: 'flag', isActive: true });
     if (existingFlag) return message.reply("❌ 이미 태극기 녹화를 진행 중입니다.");
 
+    const recoveryPendingFlag = await RecordSession.findOne({ userId: message.author.id, sessionType: 'flag', needsRecovery: true });
+    if (recoveryPendingFlag) {
+        return message.reply(
+            `❌ 이전 녹화(ID: \`${recoveryPendingFlag.sessionId}\`)가 영상 생성 중 오류로 중단되어 복구 대기 중입니다.\n` +
+            `먼저 \`w!record recover ${recoveryPendingFlag.sessionId}\` 명령어로 복구를 시도해주세요.`
+        );
+    }
+
     const endTime = new Date(Date.now() + durationMs);
     await new RecordSession({
         userId: message.author.id,
         sessionType: 'flag',
+        sessionId: generateSessionId(),
         zoneName: zone.name,
         endTime: endTime,
-        isActive: true
+        isActive: true,
+        commandChannelId: message.channel.id
     }).save();
 
     try {
@@ -2717,6 +2902,19 @@ client.on('interactionCreate', async (interaction) => {
             });
         }
 
+        const recoveryPendingArtwork = await RecordSession.findOne({
+            userId, sessionType: 'artwork', needsRecovery: true
+        });
+        if (recoveryPendingArtwork) {
+            pendingArtworkRecords.delete(userId);
+            return interaction.update({
+                content:
+                    `❌ 이전 작품 녹화(ID: \`${recoveryPendingArtwork.sessionId}\`)가 영상 생성 중 오류로 중단되어 복구 대기 중입니다.\n` +
+                    `먼저 \`w!record recover ${recoveryPendingArtwork.sessionId}\` 명령어로 복구를 시도해주세요.`,
+                embeds: [], components: []
+            });
+        }
+
         const pending = pendingArtworkRecords.get(userId);
         if (!pending) {
             return interaction.update({ content: "❌ 세션이 만료되었습니다. 다시 `w!record` 명령어를 실행해주세요.", embeds: [], components: [] });
@@ -2727,8 +2925,10 @@ client.on('interactionCreate', async (interaction) => {
 
         await new RecordSession({
             userId, sessionType: 'artwork',
+            sessionId: generateSessionId(),
             tileX, tileY, localX, localY, captureWidth, captureHeight,
-            isActive: true
+            isActive: true,
+            commandChannelId: interaction.channelId
         }).save();
 
         // 최초 1번 프레임 즉시 저장
@@ -2769,7 +2969,11 @@ client.on('interactionCreate', async (interaction) => {
     // ── 작품 녹화 중지 확인 ──────────────────────────────────────
     if (cid === `confirm_stop_artwork_${userId}`) {
         await interaction.update({ content: "⏹️ 녹화를 중지하고 영상을 생성합니다...", embeds: [], components: [] });
-        await RecordSession.updateOne({ userId, sessionType: 'artwork', isActive: true }, { isActive: false });
+        // 이 메시지를 상태 메시지로 등록 → 이후 완료/오류 안내를 DM 대신 이 메시지 수정으로 전달
+        await RecordSession.updateOne(
+            { userId, sessionType: 'artwork', isActive: true },
+            { isActive: false, statusChannelId: interaction.channelId, statusMessageId: interaction.message.id }
+        );
         await finalizeRecord(userId, 'artwork');
         return;
     }
@@ -2815,7 +3019,11 @@ client.on('interactionCreate', async (interaction) => {
     // ── 기존 태극기 녹화 중지 확인 (하위 호환 유지) ──────────────
     if (cid === 'confirm_stop_record') {
         await interaction.update({ content: "✅ 녹화 중단됨", embeds: [], components: [] });
-        await RecordSession.updateOne({ userId, sessionType: 'flag', isActive: true }, { isActive: false });
+        // 이 메시지를 상태 메시지로 등록 → 이후 완료/오류 안내를 DM 대신 이 메시지 수정으로 전달
+        await RecordSession.updateOne(
+            { userId, sessionType: 'flag', isActive: true },
+            { isActive: false, statusChannelId: interaction.channelId, statusMessageId: interaction.message.id }
+        );
         await finalizeRecord(userId, 'flag');
         return;
     }
@@ -2830,6 +3038,7 @@ client.once('clientReady', () => {
     console.log(`✅ ${client.user.tag} 온라인! 감시 시스템 가동 중...`);
     console.log(`📡 ${client.guilds.cache.size}개 서버에서 활동 중`);
     cleanupOrphanedTempDirs();
+    migrateLegacySessionIds();
 
     // Rich Presence 설정
     let statusIndex = 0;
