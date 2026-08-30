@@ -19,3 +19,10 @@ Thumbs.db
 assets/index_backup.js
 
 **/desktop.ini
+
+# AI 업로드 관련 파일
+*.zip
+/zip/**
+
+# 압축 스크립트
+zip.py

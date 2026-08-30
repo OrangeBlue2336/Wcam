@@ -1,4 +1,19 @@
-require('dotenv').config();
+const env = require('./config/env');
+const {
+    RECORD_FPS,
+    MAX_RECORD_DURATION_MS,
+    CAPTURE_INTERVAL_MS,
+    API_SECRET_KEY,
+    MONGODB_URI,
+    BOT_TOKEN,
+    KOYEB_URL,
+    NODE_ENV,
+    DEVELOPER_ID,
+    SUPPORT_SERVER_URL,
+    DASHBOARD_URL,
+    IS_DEV,
+    PORT
+} = env;
 
 const express = require('express');
 const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
@@ -15,13 +30,6 @@ const path = require('path');
 const crypto = require('crypto'); // 녹화 세션 복구용 고유 ID 생성에 사용
 const { registerFont, createCanvas, loadImage } = require('canvas');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
-
-// ========================================
-// 전역 설정 및 상수
-// ========================================
-const RECORD_FPS = 30; // 수정이 용이하도록 상단에 배치
-const MAX_RECORD_DURATION_MS = 24 * 60 * 60 * 1000; // 최대 24시간
-const CAPTURE_INTERVAL_MS = 30000; // 30초마다 캡처 (기존 감시 주기와 동일하게 설정)
 
 // ========================================
 // 영상 인코딩 대기열 (큐) 설정
@@ -57,11 +65,6 @@ process.on('uncaughtException', (error) => {
     console.error('❌ 잡히지 않은 예외(Uncaught Exception):', error);
 });
 
-// ========================================
-// API 보안 설정
-// ========================================
-const API_SECRET_KEY = process.env.API_SECRET_KEY || '';
-
 // API 키 검증 미들웨어
 function validateApiKey(req, res, next) {
     const apiKey = req.headers['x-api-key'];
@@ -76,38 +79,6 @@ function validateApiKey(req, res, next) {
     }
     
     next();
-}
-
-// ========================================
-// 1. 환경 변수 설정 (Render에서 설정할 것들)
-// ========================================
-const MONGODB_URI = (process.env.NODE_ENV === 'development')
-    ? (process.env.MONGODB_URI_DEV || process.env.MONGODB_URI || '')
-    : (process.env.MONGODB_URI || '');
-const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const KOYEB_URL = process.env.KOYEB_PUBLIC_DOMAIN
-    ? `https://${process.env.KOYEB_PUBLIC_DOMAIN}`
-    : '';
-const NODE_ENV = process.env.NODE_ENV || 'production';
-const DEVELOPER_ID = process.env.DEVELOPER_ID || '' ;
-const SUPPORT_SERVER_URL = process.env.SUPPORT_SERVER_URL || 'https://discord.gg/utxeK62GJV';
-const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://orangeblue2336.github.io/wplace';
-
-
-// 개발 모드 확인
-const IS_DEV = NODE_ENV === 'development';
-if (IS_DEV) {
-    console.log('🔧 개발 모드로 실행 중...');
-} else {
-    console.log('🚀 프로덕션 모드로 실행 중...');
-}
-
-// 환경변수 확인 (보안상 전체는 표시하지 않음)
-if (!MONGODB_URI || !BOT_TOKEN) {
-    console.error('❌ 필수 환경변수가 설정되지 않았습니다!');
-    console.error('MONGODB_URI:', MONGODB_URI ? '✅ 설정됨' : '❌ 없음');
-    console.error('BOT_TOKEN:', BOT_TOKEN ? '✅ 설정됨' : '❌ 없음');
-    process.exit(1);
 }
 
 // ========================================
@@ -205,7 +176,6 @@ const RecordFrame = mongoose.model('RecordFrame', RecordFrameSchema);
 // 3. Express 웹서버 (Keep-alive용)
 // ========================================
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 서버가 포트 ${PORT}에서 실행 중입니다`);
