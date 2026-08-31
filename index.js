@@ -7,11 +7,9 @@ const {
     MONGODB_URI,
     BOT_TOKEN,
     KOYEB_URL,
-    NODE_ENV,
     DEVELOPER_ID,
     SUPPORT_SERVER_URL,
     DASHBOARD_URL,
-    IS_DEV,
     PORT
 } = env;
 
@@ -66,22 +64,6 @@ process.on('uncaughtException', (error) => {
     console.error('❌ 잡히지 않은 예외(Uncaught Exception):', error);
 });
 
-// API 키 검증 미들웨어
-function validateApiKey(req, res, next) {
-    const apiKey = req.headers['x-api-key'];
-    
-    // API 키가 없거나 일치하지 않으면 차단
-    if (!apiKey || apiKey !== API_SECRET_KEY) {
-        console.log(`🚫 무단 API 접근 시도: IP=${req.ip}, Key=${apiKey ? '잘못된 키' : '키 없음'}`);
-        return res.status(401).json({ 
-            success: false, 
-            error: 'Unauthorized access' 
-        });
-    }
-    
-    next();
-}
-
 // ========================================
 // 2. MongoDB 연결 및 스키마 정의
 // ========================================
@@ -110,89 +92,10 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 Public URL: ${KOYEB_URL}`);
 });
 
-app.get('/', (req, res) => res.send('Wcam Bot is Running!'));
-
-// ✅ 새로운 API 엔드포인트 추가
-// 봇 상태 확인 API
-app.get('/api/status', validateApiKey, (req, res) => {
-    res.json({
-        online: true,
-        totalServers: client.guilds.cache.size,
-        totalZones: monitorZones.length,
-        uptime: process.uptime()
-    });
-});
-
-// 구역별 실시간 데이터 API
+// 구역별 실시간 데이터 API에서 사용하는 전역 상태
+// (실제 라우트는 client, monitorZones가 만들어진 뒤 server/api.js에서 등록됩니다)
 const zoneMatchData = {}; // 전역 변수로 일치율 저장
-
-app.get('/api/zones', validateApiKey, async (req, res) => {
-    try {
-        const zonesData = await Promise.all(monitorZones.map(async (zone, index) => {
-            // 현재 저장된 일치율 가져오기 (없으면 null)
-            const matchData = zoneMatchData[zone.name] || null;
-            
-            return {
-                name: zone.name,
-                tileUrl: zone.tileUrl,
-                wplaceUrl: zone.wplaceUrl,
-                matchPercentage: matchData ? matchData.percentage : null,
-                lastChecked: matchData ? matchData.timestamp : null,
-                threshold: 90,
-                totalPixels: matchData ? matchData.totalPixels : null,
-                matchPixels: matchData ? matchData.matchPixels : null,
-                diffPixels: matchData ? matchData.diffPixels : null
-            };
-        }));
-        
-        res.json({
-            success: true,
-            zones: zonesData,
-            lastUpdate: new Date().toISOString()
-        });
-    } catch (error) {
-        console.error('API 오류:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// 특정 구역의 최신 이미지 가져오기
-app.get('/api/zone/:zoneName/image', validateApiKey, async (req, res) => {
-    try {
-        const zoneName = req.params.zoneName;
-        const zone = monitorZones.find(z => z.name === zoneName);
-        
-        if (!zone) {
-            return res.status(404).json({ success: false, error: '구역을 찾을 수 없습니다' });
-        }
-        
-        // 실시간 이미지 가져오기
-        const response = await axios.get(zone.tileUrl, { responseType: 'arraybuffer' });
-        const currentFlagBuffer = await sharp(Buffer.from(response.data))
-            .extract({ left: zone.x, top: zone.y, width: zone.width, height: zone.height })
-            .toBuffer();
-        
-        res.set('Content-Type', 'image/png');
-        res.send(currentFlagBuffer);
-    } catch (error) {
-        console.error('이미지 로드 오류:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// 일치율 히스토리 API (차트용)
 const zoneHistory = {}; // 구역별 히스토리 저장
-
-app.get('/api/zone/:zoneName/history', validateApiKey, (req, res) => {
-    const zoneName = req.params.zoneName;
-    const history = zoneHistory[zoneName] || [];
-    
-    res.json({
-        success: true,
-        zoneName: zoneName,
-        history: history.slice(-60) // 최근 60개만 반환
-    });
-});
 
 app.use(express.static('public')); // public 폴더에 HTML 파일 넣기
 
@@ -266,6 +169,9 @@ const monitorZones = [
         wplaceUrl: "https://wplace.live/?lat=42.00718311351218&lng=128.05373990302732&zoom=13.726827756600123"
     }
 ];
+
+// Express API 라우트 등록 (zoneMatchData, zoneHistory, monitorZones, client 준비된 뒤 연결)
+require('./server/api')(app, { zoneMatchData, zoneHistory, monitorZones, client });
 
 // ========================================
 // 6. 유틸리티 함수
