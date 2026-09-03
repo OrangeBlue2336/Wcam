@@ -1,6 +1,5 @@
 const env = require('./config/env');
 const {
-    RECORD_FPS,
     MAX_RECORD_DURATION_MS,
     CAPTURE_INTERVAL_MS,
     API_SECRET_KEY,
@@ -8,8 +7,6 @@ const {
     BOT_TOKEN,
     KOYEB_URL,
     DEVELOPER_ID,
-    SUPPORT_SERVER_URL,
-    DASHBOARD_URL,
     PORT
 } = env;
 
@@ -22,7 +19,6 @@ const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const { PNG } = require('pngjs');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const os = require('os');
 const mongoose = require('mongoose');
 const path = require('path');
 const { registerFont, createCanvas, loadImage } = require('canvas');
@@ -180,196 +176,7 @@ const extractedCommands = require('./commands')(commandDeps);
 
 const commands = {
     ...extractedCommands,
-    // 아래는 아직 옮기지 않은 명령어들입니다 (7-2, 7-3 단계에서 순차적으로 이동 예정).
-    'setchannel': async (message, args) => {
-        if (!message.member.permissions.has('Administrator')) {
-            return message.reply('❌ 관리자 권한이 필요합니다.');
-        }
-        // 인자가 없는 경우
-    if (args.length === 0) {
-        return message.reply('❌ 사용법: `w!setchannel [구역] #채널` 또는 `w!setchannel #채널` (전체 적용)');
-    }
-    
-    let zoneName = null;
-    let channelId = null;
-    
-    // 경우 1: w!setchannel #채널 (전체 적용)
-    if (args.length === 1) {
-        channelId = args[0].replace(/[<#>]/g, '');
-    }
-    // 경우 2: w!setchannel 독도 #채널 (특정 구역)
-    else if (args.length >= 2) {
-        // 마지막 인자가 채널
-        channelId = args[args.length - 1].replace(/[<#>]/g, '');
-        // 나머지가 구역 이름
-        zoneName = args.slice(0, -1).join(' ');
-        
-        // 구역 유효성 검사
-        const zone = findZone(zoneName);
-        if (!zone) {
-            return message.reply(`❌ '${zoneName}' 구역을 찾을 수 없습니다. 사용 가능한 구역: ${monitorZones.map(z => z.name).join(', ')}`);
-        }
-        zoneName = zone.name; // 정확한 이름으로 통일
-    }
-    
-    // 채널 유효성 검사
-    const channel = message.guild.channels.cache.get(channelId);
-    if (!channel) {
-        return message.reply('❌ 해당 채널을 찾을 수 없습니다. 올바른 채널을 입력해주세요.');
-    }
-    if (!channel.isTextBased()) {
-        return message.reply('❌ 텍스트 채널만 설정할 수 있습니다.');
-    }
-    
-    // DB 업데이트
-    if (zoneName) {
-        // 특정 구역에만 적용
-        await Setting.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { $set: { [`zones.${zoneName}.channelId`]: channelId } },
-            { upsert: true }
-        );
-        message.reply(`✅ **${zoneName}** 구역의 알림 채널이 <#${channelId}>(으)로 설정되었습니다.`);
-    } else {
-        // 전체 기본값으로 적용
-        await Setting.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { defaultChannelId: channelId },
-            { upsert: true }
-        );
-        message.reply(`✅ 모든 구역의 기본 알림 채널이 <#${channelId}>(으)로 설정되었습니다.\n(개별 구역 설정이 없는 경우 이 채널이 사용됩니다)`);
-    }
-},
-
-    'setrole': async (message, args) => {
-        if (!message.member.permissions.has('Administrator')) {
-            return message.reply('❌ 관리자 권한이 필요합니다.');
-        }
-        if (args.length === 0) {
-        return message.reply('❌ 사용법: `w!setrole [구역] @역할` 또는 `w!setrole @역할` (전체 적용)');
-    }
-    
-    let zoneName = null;
-    let roleId = null;
-    
-    // 경우 1: w!setrole @역할 (전체 적용)
-    if (args.length === 1) {
-        roleId = args[0].replace(/[<@&>]/g, '');
-    }
-    // 경우 2: w!setrole 독도 @역할 (특정 구역)
-    else if (args.length >= 2) {
-        roleId = args[args.length - 1].replace(/[<@&>]/g, '');
-        zoneName = args.slice(0, -1).join(' ');
-        
-        const zone = findZone(zoneName);
-        if (!zone) {
-            return message.reply(`❌ '${zoneName}' 구역을 찾을 수 없습니다.`);
-        }
-        zoneName = zone.name;
-    }
-    
-    // 역할 유효성 검사
-    const role = message.guild.roles.cache.get(roleId);
-    if (!role) {
-        return message.reply('❌ 해당 역할을 찾을 수 없습니다.');
-    }
-    
-    // DB 업데이트
-    if (zoneName) {
-        await Setting.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { $set: { [`zones.${zoneName}.roleId`]: roleId } },
-            { upsert: true }
-        );
-        message.reply(`✅ **${zoneName}** 구역의 알림 역할이 ${role.name}(으)로 설정되었습니다.`);
-    } else {
-        await Setting.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { defaultRoleId: roleId },
-            { upsert: true }
-        );
-        message.reply(`✅ 모든 구역의 기본 알림 역할이 ${role.name}(으)로 설정되었습니다.`);
-    }
-},
-
-    'setcooldown': async (message, args) => {
-        if (!message.member.permissions.has('Administrator')) {
-            return message.reply('❌ 관리자 권한이 필요합니다.');
-        }
-
-        if (!args[0]) {
-            return message.reply('❌ 시간을 입력해주세요. (예: 10m, 1h, 30s)');
-        }
-    
-        const duration = args[0];
-        const ms = parseDuration(duration);
-        if (!ms) return message.reply('❌ 시간 형식 오류입니다. (예: 10m, 1h, 30s)');
-
-        await Setting.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { cooldownTime: ms },
-            { upsert: true }
-        );
-
-        message.reply(`✅ 알림 쿨다운이 ${durationToKorean(duration)}(으)로 설정되었습니다.`);
-    },
-
-    'setthreshold': async (message, args) => {
-    if (!message.member.permissions.has('Administrator')) {
-        return message.reply('❌ 관리자 권한이 필요합니다.');
-    }
-
-    if (args.length === 0) {
-        return message.reply('❌ 사용법: `w!setthreshold [구역] 값` 또는 `w!setthreshold 값` (전체 적용)\n예: `w!setthreshold 85` 또는 `w!setthreshold 독도 88`');
-    }
-    
-    let zoneName = null;
-    let thresholdValue = null;
-    
-    // 경우 1: w!setthreshold 85 (전체 적용)
-    if (args.length === 1) {
-        thresholdValue = parseFloat(args[0]);
-    }
-    // 경우 2: w!setthreshold 독도 88 (특정 구역)
-    else if (args.length >= 2) {
-        thresholdValue = parseFloat(args[args.length - 1]);
-        zoneName = args.slice(0, -1).join(' ');
-        
-        const zone = findZone(zoneName);
-        if (!zone) {
-            return message.reply(`❌ '${zoneName}' 구역을 찾을 수 없습니다.`);
-        }
-        zoneName = zone.name;
-    }
-    
-    // 숫자 유효성 검사
-    if (isNaN(thresholdValue)) {
-        return message.reply('❌ 올바른 숫자를 입력해주세요. (예: w!setthreshold 85)');
-    }
-    
-    // 범위 검사 (0~100)
-    if (thresholdValue < 0 || thresholdValue > 100) {
-        return message.reply('❌ 임계값은 0에서 100 사이의 값이어야 합니다.');
-    }
-    
-    // DB 업데이트
-    if (zoneName) {
-        await Setting.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { $set: { [`zones.${zoneName}.threshold`]: thresholdValue } },
-            { upsert: true }
-        );
-        message.reply(`✅ **${zoneName}**의 훼손 감지 임계값이 **${thresholdValue}%**로 설정되었습니다.`);
-    } else {
-        await Setting.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { defaultThreshold: thresholdValue },
-            { upsert: true }
-        );
-        message.reply(`✅ 모든 구역의 기본 임계값이 **${thresholdValue}%**로 설정되었습니다.\n(개별 구역 설정이 없는 경우 이 값이 사용됩니다)`);
-    }
-},
-
+    // 아래는 아직 옮기지 않은 명령어들입니다 (7-3 단계: status, updatenotif, leaveserver, whitelist, record + 계획서에 없던 flag/history/servers 포함 예정).
     'status': async (message) => {
         const setting = await Setting.findOne({ guildId: message.guild.id });
     
