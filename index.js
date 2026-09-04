@@ -10,27 +10,15 @@ const {
 } = env;
 
 const express = require('express');
-const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 const sharp = require('sharp');
 sharp.cache(false);
-const pixelmatch = require('pixelmatch').default || require('pixelmatch');
-const { PNG } = require('pngjs');
-const fs = require('fs');
 const mongoose = require('mongoose');
 const path = require('path');
-const { registerFont, createCanvas, loadImage } = require('canvas');
-const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
-const { Setting, Whitelist, RecordSession, RecordFrame } = require('./db/models');
+const { registerFont } = require('canvas');
+const { Whitelist, RecordSession, RecordFrame } = require('./db/models');
 
-const chartJSNodeCanvas = new ChartJSNodeCanvas({ 
-    width: 1600, 
-    height: 800,
-    chartCallback: (ChartJS) => {
-        ChartJS.defaults.font.family = 'GyeonggiTitle';
-        ChartJS.defaults.font.size = 16;
-    }
-});
 const fontPath = path.join(__dirname, 'fonts', '경기천년제목_M.ttf');
 if (require('fs').existsSync(fontPath)) {
     registerFont(fontPath, { 
@@ -58,9 +46,6 @@ mongoose.connect(MONGODB_URI)
     .then(() => console.log('✅ MongoDB 연결 성공!'))
     .catch(err => console.error('❌ MongoDB 연결 실패:', err));
 
-// 마지막 알림 시간을 메모리에 저장 (서버별, 구역별)
-const lastAlertTime = {}; // 형식: { "guildId-zoneName": timestamp }
-
 // ========================================
 // 3. Express 웹서버 (Keep-alive용)
 // ========================================
@@ -70,11 +55,6 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 서버가 포트 ${PORT}에서 실행 중입니다`);
     console.log(`📡 Public URL: ${KOYEB_URL}`);
 });
-
-// 구역별 실시간 데이터 API에서 사용하는 전역 상태
-// (실제 라우트는 client, monitorZones가 만들어진 뒤 server/api.js에서 등록됩니다)
-const zoneMatchData = {}; // 전역 변수로 일치율 저장
-const zoneHistory = {}; // 구역별 히스토리 저장
 
 app.use(express.static('public')); // public 폴더에 HTML 파일 넣기
 
@@ -127,6 +107,12 @@ client.setMaxListeners(15);
 // ========================================
 const monitorZones = require('./config/zones');
 
+// 8단계: 감시(checkZones)·알림(sendAlert) 서비스와 그 공유 상태
+// (zoneMatchData, zoneHistory, lastAlertTime)를 client 준비된 뒤 "한 번만" 생성합니다.
+// server/api.js, commands/history.js, commands/resetcooldown.js, commands/testalert.js가
+// 모두 이 하나의 인스턴스를 deps로 전달받아 같은 데이터를 바라보게 됩니다.
+const { checkZones, sendAlert, zoneMatchData, zoneHistory, lastAlertTime } = require('./services/monitor')(client);
+
 // Express API 라우트 등록 (zoneMatchData, zoneHistory, monitorZones, client 준비된 뒤 연결)
 require('./server/api')(app, { zoneMatchData, zoneHistory, monitorZones, client });
 
@@ -165,320 +151,34 @@ const {
 // ========================================
 // 7. 명령어 시스템
 // ========================================
-// 7-1단계에서 옮긴 명령어들이 의존하는 것들 (client, sendAlert, lastAlertTime).
-// sendAlert는 아직 index.js 안의 함수 선언(호이스팅)이라 이 시점에도 참조 가능합니다.
-// record.js(7-3단계, v4)는 services/recording.js의 captureRegionBuffer/finalizeRecord/
-// cleanupRecord/pendingArtworkRecords를 추가로 필요로 합니다. 이 함수들은 위에서
-// require('./services/recording')(client)로 "한 번만" 생성된 것을 그대로 주입해야
-// interactionCreate(버튼 처리, 아직 index.js에 있음)와 같은 상태(pendingArtworkRecords 등)를
-// 공유할 수 있습니다. record.js 안에서 다시 require하면 상태가 분리되어 버튼이 오작동합니다.
+// commandDeps: 아직 index.js에만 있는(또는 client처럼 index.js에서만 만들 수 있는) 것들을
+// 모아서 모든 명령어 파일에 주입합니다.
+// - client: discord.js 클라이언트
+// - sendAlert, lastAlertTime, zoneHistory: services/monitor.js에서 만든 단일 인스턴스
+//   (checkZones()가 기록한 데이터를 명령어들이 그대로 읽고/쓸 수 있어야 하므로)
+// - captureRegionBuffer, finalizeRecord, cleanupRecord, pendingArtworkRecords:
+//   services/recording.js에서 만든 단일 인스턴스 (버튼 처리 로직과 상태를 공유해야 하므로)
 const commandDeps = {
     client,
     sendAlert,
     lastAlertTime,
+    zoneHistory,
     captureRegionBuffer,
     finalizeRecord,
     cleanupRecord,
     pendingArtworkRecords
 };
-const extractedCommands = require('./commands')(commandDeps);
 
-const commands = {
-    ...extractedCommands,
-    // 아래는 아직 옮기지 않은 명령어입니다 (7-3 단계 마지막 1개: history).
-    // status / flag / updatenotif / servers / leaveserver / whitelist / record 는 commands/ 폴더로 이동 완료.
-
-   'f': async (message, args) => commands['flag'](message, args),
-
-'h': async (message, args) => commands['history'](message, args),
-'history': async (message, args) => {
-    const zoneName = args.join(' ');
-        if (!zoneName) return message.reply('❌ 확인할 구역 이름을 입력해주세요. (예: w!history 독도)');
-
-        const zone = findZone(zoneName);
-        if (!zone) return message.reply(`❌ '${zoneName}' 구역을 찾을 수 없습니다.`);
-
-    // 쌓인 모든 데이터 가져오기 (최대 최근 60개)
-    const history = (zoneHistory[zone.name] || []).slice(-60);
-
-    try {
-                const configuration = {
-    type: 'line',
-    data: {
-        labels: history.map(h => new Date(h.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Seoul' })),
-        datasets: [{
-            label: '일치율 (%)',
-            data: history.map(h => h.percentage),
-            borderColor: 'rgb(54, 162, 235)',
-            backgroundColor: 'rgba(54, 162, 235, 0.3)',
-            borderWidth: 3,
-            pointRadius: 5,
-            pointBackgroundColor: 'rgb(54, 162, 235)',
-            pointBorderColor: '#fff',
-            pointBorderWidth: 2,
-            tension: 0.4,
-            fill: true
-        }]
-    },
-    options: {
-        responsive: true,
-        plugins: {
-            title: {
-                display: true,
-                text: `${zone.name} - 일치율 변화`,
-                font: { size: 36, weight: 'bold' },
-                color: '#333'
-            },
-            legend: { 
-                display: true,
-                labels: {
-                    color: '#333',
-                    font: { size: 28 }
-                }
-            }
-        },
-        scales: {
-            y: {
-                beginAtZero: false,
-                min: Math.max(0, Math.floor(Math.min(...history.map(h => h.percentage)) - 5)),
-                max: 100,
-                ticks: {
-                    color: '#666',
-                    stepSize: 0.5,
-                    callback: function(value) {
-                    return value.toFixed(1) + '%';
-                 }
-               },
-                grid: {
-                    color: 'rgba(0, 0, 0, 0.1)',
-                    drawBorder: true
-                },
-                title: { 
-                    display: true, 
-                    text: '일치율 (%)',
-                    color: '#333',
-                    font: { size: 30 }
-                }
-            },
-            x: {
-                ticks: {
-                    color: '#666'
-                },
-                grid: {
-                    color: 'rgba(0, 0, 0, 0.1)',
-                    drawBorder: true
-                },
-                title: { 
-                    display: true, 
-                    text: '시간',
-                    color: '#333',
-                    font: { size: 30 }
-                }
-            }
-        },
-        backgroundColor: '#FFFFFF'
-    },
-    plugins: [{
-        id: 'customCanvasBackgroundColor',
-        beforeDraw: (chart) => {
-            const ctx = chart.canvas.getContext('2d');
-            ctx.save();
-            ctx.globalCompositeOperation = 'destination-over';
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fillRect(0, 0, chart.width, chart.height);
-            ctx.restore();
-        }
-    }]
-};
-
-        const imageBuffer = await chartJSNodeCanvas.renderToBuffer(configuration);
-        const attachment = new AttachmentBuilder(imageBuffer, { name: 'history.png' });
-
-        const embed = new EmbedBuilder()
-            .setTitle(`📊 ${zone.name} 일치율 변화`)
-            .setDescription(`최근 30분간의 일치율 변화 그래프입니다.`)
-            .setColor(0x00AE86)
-            .setImage('attachment://history.png')
-            .addFields(
-                { name: '데이터 포인트', value: `${history.length}개`, inline: true },
-                { name: '최고 일치율', value: `${Math.max(...history.map(h => h.percentage)).toFixed(2)}%`, inline: true },
-                { name: '최저 일치율', value: `${Math.min(...history.map(h => h.percentage)).toFixed(2)}%`, inline: true }
-            )
-            .setTimestamp();
-
-        await message.reply({ embeds: [embed], files: [attachment] });
-    } catch (error) {
-        console.error('그래프 생성 오류:', error);
-        message.reply('❌ 그래프 생성 중 오류가 발생했습니다.');
-    }
-},
-
-'r': async (message, args) => commands['record'](message, args),
-    
-};
+// 7-3단계까지 모든 명령어(22개 + 별칭 f/h/r)가 commands/ 폴더로 이동 완료되어,
+// 더 이상 index.js 안에 남아있는 명령어가 없습니다. 한 줄로 조립이 끝납니다.
+const commands = require('./commands')(commandDeps);
 
 // ========================================
-// 8. 핵심 감시 로직
+// 8. 핵심 감시 로직 / 9. 알림 전송 함수
 // ========================================
-async function checkZones() {
-    for (const zone of monitorZones) {
-        try {
-            if (!fs.existsSync(zone.originalPath)) {
-                console.warn(`⚠️ ${zone.name}의 원본 이미지가 없습니다: ${zone.originalPath}`);
-                continue;
-            }
-
-            // 현재 타일 다운로드 및 구간 추출
-            const response = await axios.get(zone.tileUrl, { responseType: 'arraybuffer' });
-            const currentFlagBuffer = await sharp(Buffer.from(response.data))
-                .extract({ left: zone.x, top: zone.y, width: zone.width, height: zone.height })
-                .ensureAlpha()
-                .toBuffer();
-
-            // 픽셀 비교
-            const currentImg = PNG.sync.read(currentFlagBuffer);
-            const originalImg = PNG.sync.read(fs.readFileSync(zone.originalPath));
-            const { width, height } = originalImg;
-            const diff = new PNG({ width, height });
-
-            const numDiffPixels = pixelmatch(
-                originalImg.data, currentImg.data, diff.data, width, height,
-                { threshold: 0.1 }
-            );
-
-            const totalPixels = width * height;
-            const matchPercentage = ((totalPixels - numDiffPixels) / totalPixels) * 100;
-
-            // ✅ 일치율 데이터 저장
-            zoneMatchData[zone.name] = {
-                percentage: matchPercentage,
-                timestamp: new Date().toISOString(),
-                totalPixels: totalPixels,
-                matchPixels: totalPixels - numDiffPixels,
-                diffPixels: numDiffPixels
-            };
-            
-            // ✅ 히스토리 저장
-            if (!zoneHistory[zone.name]) {
-                zoneHistory[zone.name] = [];
-            }
-            zoneHistory[zone.name].push({
-                percentage: matchPercentage,
-                timestamp: new Date().toISOString()
-            });
-            
-            // 최대 60개만 유지
-            if (zoneHistory[zone.name].length > 60) {
-                zoneHistory[zone.name].shift();
-            }
-
-            console.log(`[${zone.name}] 일치율: ${matchPercentage.toFixed(2)}%`);
-
-            // 모든 활성화된 서버에 대해 각각의 임계값 체크
-            const allSettings = await Setting.find({ enabled: true });
-
-            for (const setting of allSettings) {
-                // 구역별 설정 가져오기
-                const channelId = getZoneSetting(setting, zone.name, 'channelId');
-                const roleId = getZoneSetting(setting, zone.name, 'roleId');
-                const threshold = getZoneSetting(setting, zone.name, 'threshold') || 90;
-                
-                // 채널이 설정되지 않은 경우 스킵
-                if (!channelId) {
-                    continue;
-                }
-                
-                // 구역별 활성화 상태 확인
-                const zoneEnabled = setting.zones?.has(zone.name) 
-                    ? (setting.zones.get(zone.name).enabled !== false)
-                    : true;
-                
-                if (!zoneEnabled) {
-                    continue;
-                }
-
-                // 임계값 미만일 경우에만 알림
-                if (matchPercentage < threshold) {
-                    const now = Date.now();
-                    const alertKey = `${setting.guildId}-${zone.name}`;
-                    const lastTime = lastAlertTime[alertKey] || 0;
-
-                    // 쿨다운 체크
-                    if (now - lastTime > setting.cooldownTime) {
-                        const matchPixels = totalPixels - numDiffPixels;
-                        await sendAlert(
-                            zone, 
-                            matchPercentage, 
-                            currentFlagBuffer, 
-                            setting.guildId, 
-                            matchPixels, 
-                            totalPixels, 
-                            numDiffPixels, 
-                            threshold,
-                            channelId,
-                            roleId
-                        );
-                        lastAlertTime[alertKey] = now;
-                        console.log(`✅ [${zone.name}] 서버 ${setting.guildId}에 알림 전송 완료 (임계값: ${threshold}%)`);
-                    } else {
-                        const remaining = Math.ceil((setting.cooldownTime - (now - lastTime)) / 1000 / 60);
-                        console.log(`⏳ [${zone.name}] 서버 ${setting.guildId} 쿨다운 중 (${remaining}분 남음)`);
-                    }
-                }
-            }
-
-        } catch (error) {
-            console.error(`❌ ${zone.name} 감시 오류:`, error.message);
-        }
-    }
-}
-
-// ========================================
-// 9. 알림 전송 함수
-// ========================================
-async function sendAlert(zone, percentage, imageBuffer, guildId, matchPixels, totalPixels, diffPixels, serverThreshold, channelId, roleId, suppressMention = false) {
-    try {
-        // channelId와 roleId를 인자로 받음 (구역별 설정 반영)
-        if (!channelId) return;
-
-        const channel = await client.channels.fetch(channelId);
-        if (!channel) return;
-
-        const attachment = new AttachmentBuilder(imageBuffer, { name: 'alert.png' });
-        const embed = new EmbedBuilder()
-            .setTitle(`🚨 태극기 훼손 감지: ${zone.name}`)
-            .setURL(zone.wplaceUrl)
-            .setDescription(
-                `${roleId ? `<@&${roleId}>` : '@everyone'} 즉각 대응이 필요합니다!\n` +
-                `현재 일치율: **${percentage.toFixed(2)}%** (기준: ${serverThreshold}%)`
-            )
-            .addFields(
-                { name: '픽셀 정보', value: `일치: ${matchPixels.toLocaleString()}/${totalPixels.toLocaleString()}\n불일치: ${diffPixels.toLocaleString()}개`, inline: false }
-            )
-            .setColor(0xFF0000)
-            .setImage('attachment://alert.png')
-            .setTimestamp();
-
-        // suppressMention이 true면 멘션 없이, false면 기존 로직 사용
-       const mentionContent = suppressMention 
-            ? null
-            : (roleId ? `<@&${roleId}>` : '@everyone');
-
-        // content가 null이면 전송하지 않음
-        const messagePayload = {
-            embeds: [embed],
-            files: [attachment]
-        };
-
-        if (mentionContent) {
-            messagePayload.content = mentionContent;
-        }
-
-        await channel.send(messagePayload);
-    } catch (error) {
-        console.error(`❌ 알림 전송 오류 (서버: ${guildId}):`, error.message);
-    }
-}
+// checkZones(), sendAlert()와 그 공유 상태(zoneMatchData, zoneHistory, lastAlertTime)는
+// services/monitor.js로 이동했습니다 (8단계). 위에서 이미 구조분해해온
+// checkZones를 아래 setInterval에서 그대로 사용합니다.
 
 // ========================================
 // 10. 이벤트 핸들러
