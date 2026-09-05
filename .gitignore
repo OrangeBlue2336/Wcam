@@ -26,3 +26,7 @@ assets/index_backup.js
 
 # 압축 스크립트
 zip.py
+
+# 에이전트 관련 파일
+AGENTS.md
+CLAUDE.md

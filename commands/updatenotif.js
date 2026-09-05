@@ -19,7 +19,7 @@ module.exports = (deps) => async (message) => {
     const failedServers = [];
 
     // 2. 모든 서버 순회
-    for (const [guildId, guild] of client.guilds.cache) {
+    for (const [, guild] of client.guilds.cache) {
         try {
             // 메시지 전송 권한이 있는 첫 번째 텍스트 채널 찾기
             const channel = guild.channels.cache.find(ch =>

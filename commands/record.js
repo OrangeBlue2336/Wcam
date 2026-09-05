@@ -37,7 +37,7 @@ module.exports = (deps) => async (message, args) => {
             await statusMsg.edit('🧪 **[녹화 스트레스 테스트]** 프레임 2880장 DB 저장 중...');
 
             // ② RecordSession 생성 (이미 완료된 상태로)
-            const testSession = await new RecordSession({
+            await new RecordSession({
                 userId: message.author.id,
                 sessionType: 'flag',
                 sessionId: generateSessionId(),
