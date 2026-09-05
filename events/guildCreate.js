@@ -1,10 +1,5 @@
-// events/guildCreate.js
-// 9단계: index.js에 있던 client.on('guildCreate', ...) 로직(화이트리스트 체크,
-// 미등록 서버 자동 퇴장, 개발자 DM 알림)을 그대로 옮겼습니다.
-//
-// client는 index.js에서 만들어진 것을 그대로 주입받아야 합니다 (client.users.fetch 사용).
-// Whitelist(db 모델), DEVELOPER_ID(config/env), EmbedBuilder(discord.js)는 상태 공유가
-// 필요 없는 정적인 것들이라 다른 파일들과 마찬가지로 이 파일에서 직접 require합니다.
+// events/guildCreate.js — 새 서버 초대 시 화이트리스트 체크, 미등록 서버 자동 퇴장 + 개발자 DM 알림.
+// client는 index.js에서 주입받고(client.users.fetch 사용), Whitelist·DEVELOPER_ID·EmbedBuilder는 직접 require
 
 const { EmbedBuilder } = require('discord.js');
 const { DEVELOPER_ID } = require('../config/env');
@@ -90,7 +85,7 @@ module.exports = (client) => async (guild) => {
 
                 await channel.send({ embeds: [noticeEmbed] });
 
-                // 3초 후 퇴장 (메시지를 읽을 시간 제공)
+                // 3초 후 퇴장
                 await new Promise(resolve => setTimeout(resolve, 3000));
             }
 

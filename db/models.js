@@ -26,7 +26,7 @@ const SettingSchema = new mongoose.Schema({
 
 const Setting = mongoose.model('Setting', SettingSchema);
 
-// ✅ 화이트리스트 스키마 추가
+// 화이트리스트 스키마 추가
 const WhitelistSchema = new mongoose.Schema({
     guildId: { type: String, required: true, unique: true },
     guildName: String,
@@ -57,7 +57,7 @@ const RecordSessionSchema = new mongoose.Schema({
     needsRecovery: { type: Boolean, default: false }, // 인코딩/전송 중 오류로 중단되어 복구 대기 중인지 여부
     commandChannelId: String,   // 녹화를 시작한 채널 (자동 종료 시 상태 메시지를 보낼 곳)
     statusChannelId: String,    // "영상을 생성합니다..." 등 진행 상황을 표시 중인 메시지의 채널
-    statusMessageId: String     // 위 메시지의 ID (DM 대신 이 메시지를 수정해서 결과/오류를 안내함)
+    statusMessageId: String     // 위 메시지의 ID (DM 대신 이 메시지를 수정해서 결과/오류를 안내)
 });
 
 const RecordSession = mongoose.model('RecordSession', RecordSessionSchema);

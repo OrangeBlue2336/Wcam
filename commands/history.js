@@ -1,15 +1,6 @@
-// commands/history.js
-// 최근 30분 일치율 그래프 명령어 (w!history [구역], 별칭 w!h)
-//
-// zoneHistory는 services/monitor.js가 관리하는 공유 상태입니다. index.js에서
-// 이미 만들어진 "단 하나의" zoneHistory 객체를 deps로 주입받아야 checkZones()가
-// 기록한 데이터를 그대로 조회할 수 있습니다 (이 파일에서 monitor.js를 다시
-// require하면 checkZones()가 기록한 데이터와 별개의 빈 객체를 보게 됩니다).
-//
-// chartJSNodeCanvas(그래프 렌더러)는 다른 곳과 상태를 공유할 필요가 없는
-// 단순 렌더링 도구라, 이 파일 안에서 직접 만들어 씁니다. 폰트 등록(registerFont)은
-// index.js가 부팅 시 한 번 처리하므로, 이 파일이 require되는 시점(=index.js가
-// 이미 폰트를 등록한 이후)에는 문제없이 등록된 폰트를 사용할 수 있습니다.
+// commands/history.js — 최근 30분 일치율 그래프 명령어 (w!history [구역], 별칭 w!h).
+// zoneHistory는 services/monitor.js가 만든 단일 인스턴스를 deps로 받아야 checkZones()가 쌓은 데이터를 그대로 조회
+// chartJSNodeCanvas는 상태 공유가 필요 없어 이 파일 안에서 직접 생성하며, 폰트는 index.js가 부팅 시 등록해둔 것을 사용
 
 const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');

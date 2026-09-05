@@ -21,7 +21,7 @@ function validateApiKey(req, res, next) {
 module.exports = (app, { zoneMatchData, zoneHistory, monitorZones, client }) => {
     app.get('/', (req, res) => res.send('Wcam Bot is Running!'));
 
-    // ✅ 새로운 API 엔드포인트 추가
+    // 새로운 API 엔드포인트 추가
     // 봇 상태 확인 API
     app.get('/api/status', validateApiKey, (req, res) => {
         res.json({

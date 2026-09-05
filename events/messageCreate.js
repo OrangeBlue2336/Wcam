@@ -1,10 +1,4 @@
-// events/messageCreate.js
-// 9단계: index.js에 있던 client.on('messageCreate', ...) 로직을 그대로 옮겼습니다.
-// 'w!'로 시작하는 메시지를 파싱해서 commands 객체(commands/index.js가 만든 것)에서
-// 해당 명령어를 찾아 실행합니다.
-//
-// index.js에서 이미 완성된 commands 객체를 그대로 주입받아 사용합니다:
-//   client.on('messageCreate', require('./events/messageCreate')(commands));
+// events/messageCreate.js — 'w!' 명령어를 파싱해 commands 객체(commands/index.js)에서 찾아 실행
 
 module.exports = (commands) => async (message) => {
     if (!message.content.toLowerCase().startsWith('w!') || message.author.bot) return;

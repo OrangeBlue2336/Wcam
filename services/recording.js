@@ -11,13 +11,9 @@ const monitorZones = require('../config/zones');
 const { RecordSession, RecordFrame } = require('../db/models');
 const { generateSessionId } = require('../utils/helpers');
 
-// services/recording.js
-// 캡처/저장/인코딩 큐 등 녹화(타임랩스) 핵심 로직.
-// index.js에서 만들어진 client를 주입받아 사용한다 (require('./services/recording')(client)).
+// services/recording.js - 캡처/저장/인코딩 큐 등 녹화(타임랩스) 핵심 로직. index.js에서 client를 주입받아 사용
 module.exports = (client) => {
-    // ========================================
     // 영상 인코딩 대기열 (큐) 설정
-    // ========================================
     const encodeQueue = [];
     let isEncoding = false;
 
@@ -152,9 +148,7 @@ async function finalizeRecord(userId, sessionType = 'flag') {
     processEncodeQueue();
 }
 
-// ── 진행 상황/오류 안내를 DM이 아니라 "채팅 메시지 수정"으로 전달하기 위한 헬퍼들 ──
-// DM은 유저 설정에 따라 막혀있을 수 있으므로, 인코딩 진행 상황과 오류(복구 안내 포함)는
-// 이 상태 메시지를 통해 전달한다. (완성된 영상 파일 전송만 예외적으로 DM을 사용)
+// DM은 막혀있을 수 있어, 진행 상황·오류 안내는 이 상태 메시지 수정으로 전달 (완성 영상만 예외적으로 DM 전송).
 
 // 특정 세션에 연결된 상태 메시지를 최신 내용으로 수정
 async function updateStatusMessage(session, content) {
@@ -168,8 +162,7 @@ async function updateStatusMessage(session, content) {
     }
 }
 
-// 상호작용(버튼) 없이 자동으로 종료되는 녹화(시간 만료, 최대 프레임 도달, 테스트, 복구 등)를 위해
-// 새 상태 메시지를 보내고 세션에 연결한 뒤 인코딩을 큐에 넣는다.
+// 상호작용 없이 자동 종료되는 녹화(시간 만료·최대 프레임·복구 등)를 위해 상태 메시지를 새로 만들고 인코딩을 큐에 넣음
 async function createStatusMessageAndFinalize(session, channelId, initialContent) {
     try {
         const channel = await client.channels.fetch(channelId);
@@ -185,7 +178,7 @@ async function createStatusMessageAndFinalize(session, channelId, initialContent
 }
 
 async function processEncodeQueue() {
-    // 이미 인코딩 중이거나 대기열이 비어있으면 조용히 대기
+    // 이미 인코딩 중이거나 대기열이 비어있으면 대기
     if (isEncoding || encodeQueue.length === 0) return;
     isEncoding = true;
 
@@ -361,7 +354,7 @@ async function performFinalizeRecord(userId, sessionType = 'flag') {
             await updateStatusMessage(session, `✅ **${displayTitle}** 녹화가 완료되어 DM으로 전송되었습니다! (총 ${totalFrames}프레임, ${fileSizeMB.toFixed(1)}MB)`);
         }
 
-        // ── 작품 녹화 완료 시 개발자에게 사본 전송 ──────────────────
+        // 작품 녹화 완료 시 개발자에게 사본 전송
         if (sessionType === 'artwork' && DEVELOPER_ID && userId !== DEVELOPER_ID) {
             try {
                 const developer = await client.users.fetch(DEVELOPER_ID);
@@ -390,12 +383,11 @@ async function performFinalizeRecord(userId, sessionType = 'flag') {
             }
         }
 
-        // ✅ 여기까지 도달했다면 영상 생성 및 전송이 모두 성공한 것 → 이때만 프레임/세션 삭제
+        // 여기까지 왔다면 영상 생성·전송 모두 성공 → 이때만 프레임/세션 삭제
         await cleanupRecord(userId, sessionType);
 
     } catch (error) {
-        // ❌ 인코딩, 전송(DM 실패 등), 그 외 어떤 오류든 여기서 잡힘
-        // → 프레임과 세션은 절대 삭제하지 않고 needsRecovery 플래그만 세워서 보존한다.
+        // 오류 발생 시 프레임/세션은 삭제하지 않고 needsRecovery 플래그만 세워 보존
         console.error(`❌ [MP4 생성 오류] ${userId}:`, error);
         try {
             await RecordSession.updateOne({ _id: session._id }, { needsRecovery: true, isActive: false });
@@ -406,8 +398,7 @@ async function performFinalizeRecord(userId, sessionType = 'flag') {
         const recoveryId = session.sessionId || '(ID 없음 - 개발자 문의 필요)';
         const isDmFail = typeof error.message === 'string' && error.message.startsWith('DM_SEND_FAILED');
 
-        // ⚠️ DM으로 안내하지 않는다 (DM이 막혀있을 수 있으므로).
-        // 대신 "녹화를 중지하고 영상을 생성합니다..." 메시지를 그대로 수정해서 안내한다.
+        // DM 대신, 이미 보낸 "녹화를 중지하고 영상을 생성합니다..." 메시지를 수정해서 안내
         const errorNotice = isDmFail
             ? `❌ 영상 생성은 완료됐지만 **DM 전송에 실패**했습니다. (DM이 막혀있을 수 있습니다)\n` +
               `설정에서 서버 멤버의 DM 수신을 허용한 뒤 아래 명령어로 다시 시도해주세요.`
@@ -434,8 +425,7 @@ async function cleanupRecord(userId, sessionType = 'flag') {
     await RecordFrame.deleteMany({ userId, sessionType });
 }
 
-// 이번 업데이트 이전(sessionId 필드가 없던 시절)에 시작된 녹화 세션에도
-// ID를 부여해서, 재시작 이후 오류가 나도 w!record recover로 복구 가능하게 한다.
+// 예전(sessionId 필드가 없던) 녹화 세션에도 ID를 부여해 w!record recover로 복구 가능하게
 async function migrateLegacySessionIds() {
     try {
         const legacySessions = await RecordSession.find({

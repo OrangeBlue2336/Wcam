@@ -1,7 +1,4 @@
-// commands/enablezone.js
-// 특정 구역 감시 재활성화 명령어 (w!enablezone [구역])
-// 참고: REFACTOR_PLAN.md의 17개 명령어 목록에는 없었지만, 원본 index.js에
-// disablezone과 짝을 이루어 존재하던 명령어라 7-1단계에서 함께 옮겼습니다.
+// commands/enablezone.js — 특정 구역 감시 재활성화 명령어 (w!enablezone [구역]). disablezone과 짝을 이루는 명령어.
 
 const { Setting } = require('../db/models');
 const monitorZones = require('../config/zones');

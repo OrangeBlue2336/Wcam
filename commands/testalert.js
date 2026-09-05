@@ -1,7 +1,5 @@
-// commands/testalert.js
-// 강제 테스트 알림 발송 명령어 (w!testalert [구역] [silent])
-// sendAlert 함수는 8단계(services/monitor.js)에서 옮겨지기 전까지는
-// index.js에 남아있으므로, deps로 주입받아 사용합니다.
+// commands/testalert.js — 강제 테스트 알림 발송 명령어 (w!testalert [구역] [silent]).
+// sendAlert는 services/monitor.js가 만든 단일 인스턴스를 deps로 주입받아 사용
 
 const axios = require('axios');
 const sharp = require('sharp');

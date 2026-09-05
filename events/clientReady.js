@@ -1,14 +1,6 @@
-// events/clientReady.js
-// 9단계: index.js에 있던 client.once('clientReady', ...) 로직을 그대로 옮겼습니다.
-// (로그 출력, 임시 디렉토리 정리, 레거시 세션 마이그레이션, Rich Presence 상태 교체,
-//  감시/녹화 주기 작업 setInterval 등록)
-//
-// checkZones(services/monitor.js)와 migrateLegacySessionIds/processRecordings
-// (services/recording.js)는 index.js에서 이미 "한 번만" 생성된 단일 인스턴스를 그대로
-// deps로 주입받아야 합니다 (record.js, history.js 등 다른 곳과 같은 상태를 공유해야 하므로).
-//
-// CAPTURE_INTERVAL_MS(config/env)와 cleanupOrphanedTempDirs(utils/helpers)는 상태 공유가
-// 필요 없는 정적인 것들이라 다른 파일들과 마찬가지로 이 파일에서 직접 require합니다.
+// events/clientReady.js — 로그 출력, 임시 파일 정리, Rich Presence 교체, 감시/녹화 주기 작업(setInterval) 등록.
+// checkZones/migrateLegacySessionIds/processRecordings는 index.js가 만든 단일 인스턴스를 deps로 받고,
+// CAPTURE_INTERVAL_MS·cleanupOrphanedTempDirs는 직접 require
 
 const { CAPTURE_INTERVAL_MS } = require('../config/env');
 const { cleanupOrphanedTempDirs } = require('../utils/helpers');

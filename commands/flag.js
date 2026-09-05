@@ -1,6 +1,5 @@
 // commands/flag.js
-// 실시간 상태 확인 명령어 (w!flag [구역], 별칭 w!f)
-// 별칭 'f'는 아직 index.js에 남아있으며, commands['flag']를 참조해 이 파일로 연결됩니다.
+// 실시간 상태 확인 명령어 (w!flag [구역], 별칭 w!f — commands/index.js 로더가 연결)
 
 const axios = require('axios');
 const sharp = require('sharp');

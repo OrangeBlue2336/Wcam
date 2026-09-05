@@ -1,20 +1,14 @@
 require('dotenv').config();
 
-// ========================================
 // 전역 설정 및 상수
-// ========================================
 const RECORD_FPS = 30; // 수정이 용이하도록 상단에 배치
 const MAX_RECORD_DURATION_MS = 24 * 60 * 60 * 1000; // 최대 24시간
 const CAPTURE_INTERVAL_MS = 30000; // 30초마다 캡처 (기존 감시 주기와 동일하게 설정)
 
-// ========================================
 // API 보안 설정
-// ========================================
 const API_SECRET_KEY = process.env.API_SECRET_KEY || '';
 
-// ========================================
-// 1. 환경 변수 설정 (Render에서 설정할 것들)
-// ========================================
+// 환경 변수 설정 (Render에서 설정할 것들)
 const MONGODB_URI = (process.env.NODE_ENV === 'development')
     ? (process.env.MONGODB_URI_DEV || process.env.MONGODB_URI || '')
     : (process.env.MONGODB_URI || '');
@@ -44,9 +38,7 @@ if (!MONGODB_URI || !BOT_TOKEN) {
     process.exit(1);
 }
 
-// ========================================
-// 3. Express 웹서버 포트
-// ========================================
+// Express 웹서버 포트
 const PORT = process.env.PORT || 3000;
 
 module.exports = {

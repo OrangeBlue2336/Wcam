@@ -1,12 +1,6 @@
-// commands/record.js
-// 녹화(타임랩스) 명령어 (w!record, 별칭 w!r) — 22개 명령어 중 가장 큰 명령어
-//
-// 이 명령어는 services/recording.js가 관리하는 "공유 상태"(pendingArtworkRecords,
-// 인코딩 큐 등)를 사용합니다. commands/index.js 로더가 이 파일을 불러올 때마다
-// require('../services/recording')(client)를 다시 호출하면 상태가 서로 분리되어
-// interactionCreate(버튼 처리, 아직 index.js에 있음)와 데이터가 어긋나게 됩니다.
-// 그래서 captureRegionBuffer / finalizeRecord / cleanupRecord / pendingArtworkRecords는
-// index.js에서 이미 만들어진 "단 하나의" 인스턴스를 deps로 전달받아 사용합니다.
+// commands/record.js — 녹화(타임랩스) 명령어 (w!record, 별칭 w!r). 22개 명령어 중 가장 큼.
+// services/recording.js가 관리하는 공유 상태(pendingArtworkRecords 등)를 index.js가 만든 단일 인스턴스로 deps 주입받아,
+// events/interactionCreate.js(버튼 처리)와 같은 데이터를 바라보게 함
 
 const axios = require('axios');
 const sharp = require('sharp');
@@ -19,7 +13,7 @@ const { MAX_RECORD_DURATION_MS, DEVELOPER_ID } = require('../config/env');
 module.exports = (deps) => async (message, args) => {
     const { captureRegionBuffer, finalizeRecord, cleanupRecord, pendingArtworkRecords } = deps;
 
-    // ── w!record test (개발자 전용 스트레스 테스트) ────────────────────
+    // w!record test (개발자 전용 스트레스 테스트)
     if (args[0] === 'test') {
         if (message.author.id !== DEVELOPER_ID) {
             return message.reply('❌ 이 명령어는 개발자만 사용할 수 있습니다.');
@@ -94,14 +88,14 @@ module.exports = (deps) => async (message, args) => {
         }
         return;
     }
-    // ── w!record recover (ID) — 오류로 중단된 녹화 복구 ──────────────
+    // w!record recover (ID) - 오류로 중단된 녹화 복구
     if (args[0] === 'recover') {
         const targetId = (args[1] || '').trim().toUpperCase();
         if (!targetId) {
             return message.reply("❌ 사용법: `w!record recover (ID)`\n(ID는 오류 발생 시 상태 메시지에 안내된 코드입니다)");
         }
 
-        // 🔒 본인이 시작한 녹화만 복구 가능 (userId가 일치하지 않으면 조회 자체가 안 됨 → 타인 영상이 전송될 수 없음)
+        // 본인이 시작한 녹화만 복구 가능 (userId가 일치하지 않으면 조회 자체가 안 됨 → 타인 영상이 전송될 수 없음)
         const session = await RecordSession.findOne({
             userId: message.author.id,
             sessionId: targetId,
@@ -129,7 +123,7 @@ module.exports = (deps) => async (message, args) => {
         return;
     }
 
-    // ── w!record stop ──────────────────────────────────────────────
+    // w!record stop - 진행 중인 녹화 중지
     if (args[0] === 'stop') {
         const sessions = await RecordSession.find({ userId: message.author.id, isActive: true });
 
@@ -200,7 +194,7 @@ module.exports = (deps) => async (message, args) => {
         return;
     }
 
-    // ── w!record (tileX) (tileY) (localX) (localY) + 첨부 이미지 ──
+    // w!record (tileX) (tileY) (localX) (localY) + 첨부 이미지
     // 첫 번째 인자가 숫자이면 작품 녹화
     if (!isNaN(parseInt(args[0]))) {
         if (args.length < 4) {
@@ -295,7 +289,7 @@ module.exports = (deps) => async (message, args) => {
         return;
     }
 
-    // ── w!record (지역) (시간) — 기존 태극기 녹화 ──────────────────
+    // w!record (지역) (시간) - 태극기 녹화
     if (args.length < 2) {
         return message.reply(
             "❌ 사용법:\n" +

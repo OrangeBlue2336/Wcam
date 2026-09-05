@@ -9,28 +9,17 @@ const monitorZones = require('../config/zones');
 const { Setting } = require('../db/models');
 const { getZoneSetting } = require('../utils/helpers');
 
-// services/monitor.js
-// 감시(checkZones)·알림(sendAlert) 핵심 로직과 그에 딸린 공유 상태
-// (zoneMatchData, zoneHistory, lastAlertTime)를 모아둔 파일.
-// index.js에서 만들어진 client를 주입받아 사용한다 (require('./services/monitor')(client)).
-//
-// zoneMatchData / zoneHistory / lastAlertTime은 재할당 없이 내용만 바뀌는
-// 객체이므로, 아래에서 만든 "단 하나의" 참조를 index.js, server/api.js,
-// commands/history.js, commands/resetcooldown.js, commands/testalert.js가
-// 모두 함께 바라보도록 deps로 전달합니다 (require를 여러 번 해도 이 팩토리
-// 함수는 index.js에서 한 번만 호출되므로 문제 없습니다).
+// services/monitor.js — 감시(checkZones)·알림(sendAlert)과 공유 상태(zoneMatchData/zoneHistory/lastAlertTime)를 모아둔 파일.
+// index.js가 client로 한 번만 생성한 뒤, 이 "단 하나의" 참조를 여러 파일(server/api.js, commands/history.js 등)이 함께 씀
 module.exports = (client) => {
     // 전역 일치율/히스토리 저장소 (server/api.js, commands/history.js와 공유)
     const zoneMatchData = {}; // 구역별 최신 일치율
     const zoneHistory = {};   // 구역별 최근 60개 히스토리
 
-    // 마지막 알림 시간을 메모리에 저장 (서버별, 구역별)
-    // 형식: { "guildId-zoneName": timestamp } — commands/resetcooldown.js와 공유
+    // 마지막 알림 시간(서버·구역별, { "guildId-zoneName": timestamp }) — commands/resetcooldown.js와 공유
     const lastAlertTime = {};
 
-    // ========================================
-    // 8. 핵심 감시 로직
-    // ========================================
+    // 핵심 감시 로직
     async function checkZones() {
         for (const zone of monitorZones) {
             try {
@@ -60,7 +49,7 @@ module.exports = (client) => {
                 const totalPixels = width * height;
                 const matchPercentage = ((totalPixels - numDiffPixels) / totalPixels) * 100;
 
-                // ✅ 일치율 데이터 저장
+                // 일치율 데이터 저장
                 zoneMatchData[zone.name] = {
                     percentage: matchPercentage,
                     timestamp: new Date().toISOString(),
@@ -69,7 +58,7 @@ module.exports = (client) => {
                     diffPixels: numDiffPixels
                 };
 
-                // ✅ 히스토리 저장
+                // 히스토리 저장
                 if (!zoneHistory[zone.name]) {
                     zoneHistory[zone.name] = [];
                 }
@@ -144,9 +133,7 @@ module.exports = (client) => {
         }
     }
 
-    // ========================================
-    // 9. 알림 전송 함수
-    // ========================================
+    // 알림 전송 함수
     async function sendAlert(zone, percentage, imageBuffer, guildId, matchPixels, totalPixels, diffPixels, serverThreshold, channelId, roleId, suppressMention = false) {
         try {
             // channelId와 roleId를 인자로 받음 (구역별 설정 반영)

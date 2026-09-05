@@ -1,15 +1,6 @@
-// events/interactionCreate.js
-// 9단계: index.js에 있던 client.on('interactionCreate', ...) 로직(녹화 시작/중지 버튼 처리)을
-// 그대로 옮겼습니다.
-//
-// captureRegionBuffer, finalizeRecord, pendingArtworkRecords는 6단계(services/recording.js)에서
-// 만들어진 "단 하나의" 인스턴스를 index.js로부터 deps로 주입받습니다. commands/record.js가
-// 사용하는 것과 반드시 같은 인스턴스여야, "녹화 시작 확인 버튼"을 눌렀을 때 record.js가
-// 기록해둔 pendingArtworkRecords 대기 세션을 이 파일이 정상적으로 찾을 수 있습니다
-// (v4에서 record.js를 분리할 때부터 신경 써온 부분과 동일한 이유입니다).
-//
-// RecordSession, RecordFrame(db 모델)과 EmbedBuilder 등(discord.js)은 상태 공유가 필요 없는
-// 정적인 것들이라 다른 파일들과 마찬가지로 이 파일에서 직접 require합니다.
+// events/interactionCreate.js — 녹화 시작/중지 버튼(작품 타임랩스, 태극기) 처리.
+// captureRegionBuffer/finalizeRecord/pendingArtworkRecords는 commands/record.js와 같은 단일 인스턴스를 deps로 받아야
+// "녹화 시작 확인" 버튼을 눌렀을 때 record.js가 만든 대기 세션을 정상적으로 찾을 수 있음
 
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { RecordSession, RecordFrame } = require('../db/models');
@@ -23,7 +14,7 @@ module.exports = (deps) => {
         const cid    = interaction.customId;
         const userId = interaction.user.id;
 
-        // ── 작품 녹화 시작 확인 버튼 ──────────────────────────────────
+        // 작품 녹화 시작 확인 버튼
         if (cid === `confirm_start_artwork_${userId}`) {
 
             // 버튼을 누른 시점에 DB를 2차로 확인하여 이미 녹화가 시작된 경우 중복 시작 방지
@@ -102,7 +93,7 @@ module.exports = (deps) => {
         return;
         }
 
-        // ── 작품 녹화 중지 확인 ──────────────────────────────────────
+        // 작품 녹화 중지 확인
         if (cid === `confirm_stop_artwork_${userId}`) {
             await interaction.update({ content: "⏹️ 녹화를 중지하고 영상을 생성합니다...", embeds: [], components: [] });
             // 이 메시지를 상태 메시지로 등록 → 이후 완료/오류 안내를 DM 대신 이 메시지 수정으로 전달
@@ -114,7 +105,7 @@ module.exports = (deps) => {
             return;
         }
 
-        // ── 두 개 동시 진행 → 선택 버튼 ─────────────────────────────
+        // 두 개 동시 진행 → 선택 버튼
         if (cid === `stop_select_artwork_${userId}`) {
             const s = await RecordSession.findOne({ userId, sessionType: 'artwork', isActive: true });
             if (!s) return interaction.update({ content: "❌ 진행 중인 작품 녹화를 찾을 수 없습니다.", embeds: [], components: [] });
@@ -152,7 +143,7 @@ module.exports = (deps) => {
             return;
         }
 
-        // ── 기존 태극기 녹화 중지 확인 (하위 호환 유지) ──────────────
+        // 기존 태극기 녹화 중지 확인 (하위 호환 유지)
         if (cid === 'confirm_stop_record') {
             await interaction.update({ content: "✅ 녹화 중단됨", embeds: [], components: [] });
             // 이 메시지를 상태 메시지로 등록 → 이후 완료/오류 안내를 DM 대신 이 메시지 수정으로 전달
