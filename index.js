@@ -1,23 +1,22 @@
 const env = require('./config/env');
 const {
-    CAPTURE_INTERVAL_MS,
     API_SECRET_KEY,
     MONGODB_URI,
     BOT_TOKEN,
     KOYEB_URL,
-    DEVELOPER_ID,
     PORT
 } = env;
+// 9단계: CAPTURE_INTERVAL_MS는 events/clientReady.js가, DEVELOPER_ID는 events/guildCreate.js가
+// 각자 config/env에서 직접 불러와 사용하므로 index.js에서는 더 이상 구조분해하지 않습니다.
 
 const express = require('express');
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits } = require('discord.js');
 const axios = require('axios');
 const sharp = require('sharp');
 sharp.cache(false);
 const mongoose = require('mongoose');
 const path = require('path');
 const { registerFont } = require('canvas');
-const { Whitelist, RecordSession, RecordFrame } = require('./db/models');
 
 const fontPath = path.join(__dirname, 'fonts', '경기천년제목_M.ttf');
 if (require('fs').existsSync(fontPath)) {
@@ -119,31 +118,22 @@ require('./server/api')(app, { zoneMatchData, zoneHistory, monitorZones, client 
 // ========================================
 // 6. 유틸리티 함수
 // ========================================
-const {
-    generateSessionId,
-    findZone,
-    cleanupOrphanedTempDirs,
-    getZoneSetting
-} = require('./utils/helpers');
+// 9단계: index.js가 직접 쓰던 utils/helpers 함수(generateSessionId, findZone,
+// cleanupOrphanedTempDirs, getZoneSetting)는 모두 events/*.js로 옮겨졌고, 각 파일이
+// 필요한 것을 직접 require합니다. index.js 자체에서는 더 이상 이 모듈이 필요 없습니다.
 
-// 녹화 핵심 로직(services/recording.js)에서 가져오는 함수/상태
-// captureRegionBuffer, captureAndSave, finalizeRecord, updateStatusMessage,
-// createStatusMessageAndFinalize, processEncodeQueue, performFinalizeRecord,
-// cleanupRecord, migrateLegacySessionIds, processRecordings, encodeQueue,
-// pendingArtworkRecords 는 모두 services/recording.js 로 옮겨졌습니다.
+// 녹화 핵심 로직(services/recording.js)에서 가져오는 함수/상태 중,
+// index.js(commandDeps, events)가 실제로 사용하는 것만 구조분해합니다.
+// captureAndSave, updateStatusMessage, createStatusMessageAndFinalize, processEncodeQueue,
+// performFinalizeRecord, encodeQueue는 services/recording.js 내부에서만 쓰이고
+// index.js에서는 쓰인 적이 없어(=원래도 죽은 구조분해였음) 이번 정리에서 함께 제거했습니다.
 // client가 이미 만들어져 있는 시점(섹션 4 이후)이라 여기서 바로 불러옵니다.
 const {
     captureRegionBuffer,
-    captureAndSave,
     finalizeRecord,
-    updateStatusMessage,
-    createStatusMessageAndFinalize,
-    processEncodeQueue,
-    performFinalizeRecord,
     cleanupRecord,
     migrateLegacySessionIds,
     processRecordings,
-    encodeQueue,
     pendingArtworkRecords
 } = require('./services/recording')(client);
 
@@ -183,325 +173,37 @@ const commands = require('./commands')(commandDeps);
 // ========================================
 // 10. 이벤트 핸들러
 // ========================================
-client.on('messageCreate', async (message) => {
-    if (!message.content.toLowerCase().startsWith('w!') || message.author.bot) return;
+// 9단계: messageCreate, interactionCreate, clientReady, guildCreate, guildDelete
+// 5개 이벤트 핸들러 본문을 모두 events/*.js로 옮겼습니다. index.js에는 각 파일에
+// 필요한 deps를 주입해서 등록하는 코드만 남습니다.
+//
+// - messageCreate: commands 객체만 있으면 되므로 그대로 전달합니다.
+// - interactionCreate: services/recording.js의 단일 인스턴스(captureRegionBuffer,
+//   finalizeRecord, pendingArtworkRecords)를 commandDeps와 동일하게 전달해서,
+//   record.js가 만든 대기 세션을 버튼 클릭 시 그대로 찾을 수 있도록 합니다.
+// - clientReady: services/monitor.js의 checkZones, services/recording.js의
+//   migrateLegacySessionIds/processRecordings 단일 인스턴스와 client를 전달합니다.
+// - guildCreate: client만 주입받고 나머지(Whitelist, DEVELOPER_ID 등)는 파일 내부에서
+//   직접 require합니다.
+// - guildDelete: 의존성이 없어 팩토리 호출 없이 바로 등록합니다.
+client.on('messageCreate', require('./events/messageCreate')(commands));
 
-    const args = message.content.slice(2).trim().split(/ +/);
-    const commandName = args.shift().toLowerCase();
+client.on('interactionCreate', require('./events/interactionCreate')({
+    captureRegionBuffer,
+    finalizeRecord,
+    pendingArtworkRecords
+}));
 
-    if (commands[commandName]) {
-        try {
-            await commands[commandName](message, args);
-        } catch (error) {
-            console.error('명령어 실행 오류:', error);
-            message.reply('❌ 명령어 실행 중 오류가 발생했습니다.');
-        }
-    }
-});
+client.once('clientReady', require('./events/clientReady')({
+    client,
+    checkZones,
+    migrateLegacySessionIds,
+    processRecordings
+}));
 
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
-    const cid    = interaction.customId;
-    const userId = interaction.user.id;
+client.on('guildCreate', require('./events/guildCreate')(client));
 
-    // ── 작품 녹화 시작 확인 버튼 ──────────────────────────────────
-    if (cid === `confirm_start_artwork_${userId}`) {
-        
-        // 버튼을 누른 시점에 DB를 2차로 확인하여 이미 녹화가 시작된 경우 중복 시작 방지
-        const existingArtwork = await RecordSession.findOne({
-            userId, sessionType: 'artwork', isActive: true
-        });
-        if (existingArtwork) {
-            pendingArtworkRecords.delete(userId); // 찌꺼기 정리
-            return interaction.update({ 
-                content: "❌ 이미 작품 타임랩스 녹화가 진행 중입니다. 기존 녹화를 먼저 중지해주세요.",
-                embeds: [], components: [] 
-            });
-        }
-
-        const recoveryPendingArtwork = await RecordSession.findOne({
-            userId, sessionType: 'artwork', needsRecovery: true
-        });
-        if (recoveryPendingArtwork) {
-            pendingArtworkRecords.delete(userId);
-            return interaction.update({
-                content:
-                    `❌ 이전 작품 녹화(ID: \`${recoveryPendingArtwork.sessionId}\`)가 영상 생성 중 오류로 중단되어 복구 대기 중입니다.\n` +
-                    `먼저 \`w!record recover ${recoveryPendingArtwork.sessionId}\` 명령어로 복구를 시도해주세요.`,
-                embeds: [], components: []
-            });
-        }
-
-        const pending = pendingArtworkRecords.get(userId);
-        if (!pending) {
-            return interaction.update({ content: "❌ 세션이 만료되었습니다. 다시 `w!record` 명령어를 실행해주세요.", embeds: [], components: [] });
-        }
-        pendingArtworkRecords.delete(userId);
-
-        const { tileX, tileY, localX, localY, captureWidth, captureHeight } = pending;
-
-        await new RecordSession({
-            userId, sessionType: 'artwork',
-            sessionId: generateSessionId(),
-            tileX, tileY, localX, localY, captureWidth, captureHeight,
-            isActive: true,
-            commandChannelId: interaction.channelId
-        }).save();
-
-        // 최초 1번 프레임 즉시 저장
-        try {
-            const firstFrame = await captureRegionBuffer(tileX, tileY, localX, localY, captureWidth, captureHeight);
-            await new RecordFrame({ userId, sessionType: 'artwork', frameData: firstFrame }).save();
-            await RecordSession.updateOne({ userId, sessionType: 'artwork', isActive: true }, { frameCount: 1 });
-        } catch (e) {
-            console.error('첫 프레임 저장 오류:', e);
-        }
-
-        await interaction.update({
-            content:
-                "⏺️ **작품 타임랩스 녹화가 시작되었습니다!**\n\n" +
-                "📌 **안내:**\n" +
-                "• 30초마다 변화를 감지하여 프레임을 저장합니다.\n" +
-                "• 변화가 없으면 해당 프레임은 자동으로 건너뜁니다.\n" +
-                "• 최대 **2880 프레임** 도달 시 자동 종료됩니다.\n" +
-                "• `w!record stop` 으로 현재 프레임 수 확인 및 중지 가능합니다.\n\n" +
-                "녹화 완료 시 DM으로 MP4 타임랩스 영상을 전송해드립니다. 🎬",
-            embeds: [], files: [], components: []
-        });
-        return;
-    }
-
-    if (cid === `cancel_start_artwork_${userId}`) {
-    pendingArtworkRecords.delete(userId);
-    await interaction.update({
-        content: "❌ 녹화가 취소되었습니다.",
-        embeds: [],
-        files: [],
-        attachments: [],
-        components: []
-    });
-    return;
-    }
-
-    // ── 작품 녹화 중지 확인 ──────────────────────────────────────
-    if (cid === `confirm_stop_artwork_${userId}`) {
-        await interaction.update({ content: "⏹️ 녹화를 중지하고 영상을 생성합니다...", embeds: [], components: [] });
-        // 이 메시지를 상태 메시지로 등록 → 이후 완료/오류 안내를 DM 대신 이 메시지 수정으로 전달
-        await RecordSession.updateOne(
-            { userId, sessionType: 'artwork', isActive: true },
-            { isActive: false, statusChannelId: interaction.channelId, statusMessageId: interaction.message.id }
-        );
-        await finalizeRecord(userId, 'artwork');
-        return;
-    }
-
-    // ── 두 개 동시 진행 → 선택 버튼 ─────────────────────────────
-    if (cid === `stop_select_artwork_${userId}`) {
-        const s = await RecordSession.findOne({ userId, sessionType: 'artwork', isActive: true });
-        if (!s) return interaction.update({ content: "❌ 진행 중인 작품 녹화를 찾을 수 없습니다.", embeds: [], components: [] });
-        const fc = s.frameCount || 0;
-        const embed = new EmbedBuilder()
-            .setTitle("🎨 작품 타임랩스 중단 확인")
-            .setDescription(`현재까지 **${fc}/2880** 프레임 녹화됨.\n정말 중지하시겠습니까?`)
-            .setColor(0xFFA500);
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`confirm_stop_artwork_${userId}`).setLabel('✅ 중지').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId(`cancel_stop_record_${userId}`).setLabel('취소').setStyle(ButtonStyle.Secondary)
-        );
-        await interaction.update({ content: null, embeds: [embed], components: [row] });
-        return;
-    }
-
-    if (cid === `stop_select_flag_${userId}`) {
-        const s = await RecordSession.findOne({ userId, sessionType: 'flag', isActive: true });
-        if (!s) return interaction.update({ content: "❌ 진행 중인 태극기 녹화를 찾을 수 없습니다.", embeds: [], components: [] });
-        const fc = s.frameCount || 0;
-        const embed = new EmbedBuilder()
-            .setTitle("🚩 태극기 녹화 중단 확인")
-            .setDescription(`현재까지 **${fc}** 프레임 녹화됨.\n정말 중지하시겠습니까?`)
-            .setColor(0xFFA500);
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('confirm_stop_record').setLabel('✅ 중지').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId(`cancel_stop_record_${userId}`).setLabel('취소').setStyle(ButtonStyle.Secondary)
-        );
-        await interaction.update({ content: null, embeds: [embed], components: [row] });
-        return;
-    }
-
-    if (cid === `stop_select_cancel_${userId}`) {
-        await interaction.update({ content: "⏺️ 녹화 계속 진행", embeds: [], components: [] });
-        return;
-    }
-
-    // ── 기존 태극기 녹화 중지 확인 (하위 호환 유지) ──────────────
-    if (cid === 'confirm_stop_record') {
-        await interaction.update({ content: "✅ 녹화 중단됨", embeds: [], components: [] });
-        // 이 메시지를 상태 메시지로 등록 → 이후 완료/오류 안내를 DM 대신 이 메시지 수정으로 전달
-        await RecordSession.updateOne(
-            { userId, sessionType: 'flag', isActive: true },
-            { isActive: false, statusChannelId: interaction.channelId, statusMessageId: interaction.message.id }
-        );
-        await finalizeRecord(userId, 'flag');
-        return;
-    }
-
-    if (cid === 'cancel_stop_record' || cid === `cancel_stop_record_${userId}`) {
-        await interaction.update({ content: "⏺️ 녹화 계속 진행", embeds: [], components: [] });
-        return;
-    }
-});
-
-client.once('clientReady', () => {
-    console.log(`✅ ${client.user.tag} 온라인! 감시 시스템 가동 중...`);
-    console.log(`📡 ${client.guilds.cache.size}개 서버에서 활동 중`);
-    cleanupOrphanedTempDirs();
-    migrateLegacySessionIds();
-
-    // Rich Presence 설정
-    let statusIndex = 0;
-    const statuses = [
-        { name: '태극기 감시하는 중', type: 0 },
-        { name: 'w!help로 도움말 열기', type: 0 }
-    ];
-    
-    // 초기 상태 설정
-    client.user.setPresence({
-        activities: [statuses[0]],
-        status: 'online'
-    });
-    
-    // 30초마다 상태 교체
-    setInterval(() => {
-        statusIndex = (statusIndex + 1) % statuses.length;
-        client.user.setPresence({
-            activities: [statuses[statusIndex]],
-            status: 'online'
-        });
-    }, 30000);  // 30초 = 30000ms
-    
-    // 30초마다 감시 수행
-    setInterval(checkZones, 1000 * 30);
-    setInterval(processRecordings, CAPTURE_INTERVAL_MS);
-});
-
-// 봇이 새 서버에 추가되었을 때
-client.on('guildCreate', async (guild) => {
-    console.log(`🔔 새 서버 초대 감지: ${guild.name} (ID: ${guild.id})`);
-    
-    // 화이트리스트 체크
-    const isWhitelisted = await Whitelist.findOne({ guildId: guild.id });
-    
-    if (!isWhitelisted) {
-        console.log(`🚫 화이트리스트에 없는 서버 감지: ${guild.name} (ID: ${guild.id})`);
-        
-        try {
-            // 서버 소유자 정보
-            const owner = await client.users.fetch(guild.ownerId).catch(() => null);
-            const ownerTag = owner ? owner.tag : '알 수 없음';
-            
-            // 봇 초대자 정보 (audit log에서 확인 시도)
-            let inviter = '알 수 없음';
-            try {
-                const auditLogs = await guild.fetchAuditLogs({
-                    limit: 1,
-                    type: 28 // BOT_ADD
-                });
-                const botAddLog = auditLogs.entries.first();
-                if (botAddLog) {
-                    inviter = botAddLog.executor.tag;
-                }
-            } catch (auditError) {
-                console.log('초대자 정보 확인 실패:', auditError.message);
-            }
-            
-            // 개발자에게 DM 알림
-            if (DEVELOPER_ID) {
-                try {
-                    const developer = await client.users.fetch(DEVELOPER_ID);
-                    
-                    const alertEmbed = new EmbedBuilder()
-                        .setTitle('⚠️ 화이트리스트 외 서버 초대 감지')
-                        .setColor(0xFF0000)
-                        .addFields(
-                            { name: '서버 이름', value: guild.name, inline: true },
-                            { name: '서버 ID', value: guild.id, inline: true },
-                            { name: '멤버 수', value: `${guild.memberCount}명`, inline: true },
-                            { name: '서버 소유자', value: ownerTag, inline: true },
-                            { name: '봇 초대자', value: inviter, inline: true },
-                            { name: '\u200B', value: '\u200B', inline: true },
-                            { name: '조치', value: '서버에 안내 메시지를 보낸 후 자동 퇴장합니다.', inline: false },
-                            { name: '승인 방법', value: `\`w!whitelist add ${guild.id}\``, inline: false }
-                        )
-                        .setTimestamp();
-                    
-                    await developer.send({ embeds: [alertEmbed] });
-                } catch (dmError) {
-                    console.error('개발자 DM 전송 실패:', dmError.message);
-                }
-            }
-            
-            // 서버에 메시지 전송
-            const channel = guild.channels.cache.find(ch => 
-                ch.isTextBased() && 
-                ch.permissionsFor(guild.members.me).has('SendMessages') &&
-                ch.permissionsFor(guild.members.me).has('EmbedLinks')
-            );
-            
-            if (channel) {
-                const noticeEmbed = new EmbedBuilder()
-                    .setTitle('🚫 화이트리스트 미등록 서버')
-                    .setDescription(
-                        '이 서버는 화이트리스트에 등록되지 않은 서버입니다.\n\n' +
-                        '**아래 서버에서 사용 승인을 받아주세요:**\n' +
-                        'https://discord.gg/utxeK62GJV \n\n' +
-                        '승인 후 다시 초대해주시면 정상적으로 사용하실 수 있습니다.'
-                    )
-                    .setColor(0xFF0000)
-                    .addFields(
-                        { name: '📋 승인 절차', value: '1. 지원 서버 참여\n2. 절차에 따라 승인 요청\n3. 승인 대기\n4. 봇 재초대', inline: false }
-                    )
-                    .setFooter({ text: '잠시 후 자동으로 서버에서 퇴장합니다.' })
-                    .setTimestamp();
-                
-                await channel.send({ embeds: [noticeEmbed] });
-                
-                // 3초 후 퇴장 (메시지를 읽을 시간 제공)
-                await new Promise(resolve => setTimeout(resolve, 3000));
-            }
-            
-            // 서버에서 자동 퇴장
-            await guild.leave();
-            console.log(`📤 ${guild.name}에서 자동 퇴장 완료`);
-            console.log(`   └ 소유자: ${ownerTag}`);
-            console.log(`   └ 초대자: ${inviter}`);
-            console.log(`   └ 멤버 수: ${guild.memberCount}명`);
-            
-        } catch (error) {
-            console.error(`자동 퇴장 중 오류 발생 (${guild.name}):`, error);
-        }
-        
-        return;
-    }
-    
-    // 화이트리스트에 있는 서버 - 정상 처리
-    console.log(`✅ 승인된 서버 추가됨: ${guild.name} (ID: ${guild.id})`);
-    
-    // 화이트리스트 정보 업데이트
-    await Whitelist.findOneAndUpdate(
-        { guildId: guild.id },
-        { 
-            guildName: guild.name,
-            memberCount: guild.memberCount
-        }
-    );
-});
-
-// 봇이 서버에서 퇴장하거나 서버가 삭제되었을 때 실행
-client.on('guildDelete', (guild) => {
-    // 참고: guild 객체가 부분적(partial)일 수 있으므로 이름이 없을 경우를 대비합니다.
-    const guildName = guild.name || '알 수 없는 서버';
-    console.log(`📤 ${guildName}에서 퇴장함.`);
-});
+client.on('guildDelete', require('./events/guildDelete'));
 
 // ========================================
 // 11. 봇 로그인
