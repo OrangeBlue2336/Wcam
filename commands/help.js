@@ -30,6 +30,7 @@ const CATEGORIES = [
             { name: 'w!status', desc: '현재 봇의 상태와 설정을 확인합니다.' },
             { name: 'w!flag [지역]', desc: '특정 지역의 실시간 상태를 확인합니다.\n예: `w!flag 독도`' },
             { name: 'w!history [지역]', desc: '최근 30분간 해당 지점의 일치율 변화 그래프를 출력합니다.\n예: `w!history 독도`' },
+            { name: 'w!convert + 파일 첨부', desc: '첨부한 Blue Marble `.json`과 Wplace Overlay `.wplace` 도안 파일을 서로 변환합니다.' },
             { name: 'w!record (지역) (시간)', desc: '특정 지역을 지정한 시간동안 녹화합니다. (최대 24시간)\n예: `w!record 독도 1h`' },
             { name: 'w!record (타일X) (타일Y) (로컬X) (로컬Y)', desc: '원하는 영역의 작품 타임랩스를 녹화합니다. **(반드시 도안 이미지 첨부 필요)**\n예: `w!record 100 200 500 300`\n※ 30초마다 변화를 감지해 자동 저장합니다.' },
             { name: 'w!record stop', desc: '진행 중인 녹화를 중지하고 녹화된 프레임 수를 확인, 타임랩스 영상을 생성합니다.' },
