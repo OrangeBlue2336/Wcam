@@ -4,11 +4,10 @@
 const axios = require('axios');
 const sharp = require('sharp');
 const { PNG } = require('pngjs');
-const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const fs = require('fs');
 const { EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { Setting } = require('../db/models');
-const { findZone, getZoneSetting } = require('../utils/helpers');
+const { findZone, getZoneSetting, isTransparentPixel, countDiffPixels } = require('../utils/helpers');
 
 module.exports = (deps) => async (message, args) => {
     const zoneName = args.join(' ');
@@ -29,12 +28,9 @@ module.exports = (deps) => async (message, args) => {
         const currentImg = PNG.sync.read(currentFlagBuffer);
         const originalImg = PNG.sync.read(fs.readFileSync(zone.originalPath));
         const { width, height } = originalImg;
-        const diff = new PNG({ width, height });
 
-        const numDiffPixels = pixelmatch(
-            originalImg.data, currentImg.data, diff.data, width, height,
-            { threshold: 0.1 }
-        );
+        // 투명 픽셀 불일치까지 포함해서 계산 (utils/helpers.js의 countDiffPixels)
+        const numDiffPixels = countDiffPixels(originalImg.data, currentImg.data, width, height, { threshold: 0.1 });
 
         const totalPixels = width * height;
         const matchPercentage = ((totalPixels - numDiffPixels) / totalPixels) * 100;
@@ -81,7 +77,11 @@ module.exports = (deps) => async (message, args) => {
                 const rDiff = Math.abs(currentImgForOverlay.data[idx]     - overlayImg.data[idx]);
                 const gDiff = Math.abs(currentImgForOverlay.data[idx + 1] - overlayImg.data[idx + 1]);
                 const bDiff = Math.abs(currentImgForOverlay.data[idx + 2] - overlayImg.data[idx + 2]);
-                const isDiff = (rDiff + gDiff + bDiff) > 30; // 임계값 (0.1 * 255 * 3 ≈ 76, 더 느슨하게)
+                const origTrans = isTransparentPixel(overlayImg.data, idx);
+                const currTrans = isTransparentPixel(currentImgForOverlay.data, idx);
+                // 투명 여부가 다르면 불일치, 양쪽 모두 투명이면 일치, 그 외에는 색 차이로 판단
+                const isDiff = (origTrans !== currTrans) ||
+                    (!origTrans && !currTrans && (rDiff + gDiff + bDiff) > 30); // 임계값 (0.1 * 255 * 3 ≈ 76, 더 느슨하게)
 
                 if (isDiff) {
                     // 불일치: 빨간색 반투명 오버레이

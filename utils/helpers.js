@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const monitorZones = require('../config/zones');
+const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 
 // 짧고 사람이 입력하기 쉬운 복구용 세션 ID 생성 (예: A1B2C3D4)
 function generateSessionId() {
@@ -87,11 +88,50 @@ function getZoneSetting(setting, zoneName, key) {
     return setting[defaultKey];
 }
 
+// --- 투명 픽셀을 포함한 불일치 픽셀 계산 ---
+// pixelmatch는 투명 픽셀을 "흰색 배경 위에 얹은 색"으로 취급하기 때문에,
+// 원본의 불투명 흰색이 현재 투명(훼손)으로 바뀌어도 "일치"로 세는 문제가 있음.
+// 그래서 투명 여부(알파)가 서로 다른 픽셀은 직접 불일치로 세고,
+// 양쪽 모두 투명인 픽셀은 일치로 세며, 나머지(양쪽 모두 불투명)만 pixelmatch에 맡김.
+const TRANSPARENT_ALPHA_THRESHOLD = 128; // 알파가 이 값 미만이면 "투명"으로 판단
+
+function isTransparentPixel(data, idx) {
+    return data[idx + 3] < TRANSPARENT_ALPHA_THRESHOLD;
+}
+
+function countDiffPixels(originalData, currentData, width, height, options = { threshold: 0.1 }) {
+    const a = Buffer.from(originalData); // 원본 버퍼를 건드리지 않도록 복사본 사용
+    const b = Buffer.from(currentData);
+    let transparencyDiffCount = 0;
+
+    for (let i = 0; i < width * height; i++) {
+        const idx = i * 4;
+        const aTrans = isTransparentPixel(a, idx);
+        const bTrans = isTransparentPixel(b, idx);
+
+        if (!aTrans && !bTrans) continue; // 양쪽 불투명 → pixelmatch가 색 비교
+
+        if (aTrans !== bTrans) transparencyDiffCount++; // 한쪽만 투명 → 불일치
+
+        // 투명이 낀 픽셀은 여기서 판정을 끝냈으므로, pixelmatch가 중복 계산하지 않게 양쪽을 같은 값으로 통일
+        for (let k = 0; k < 4; k++) {
+            a[idx + k] = 255;
+            b[idx + k] = 255;
+        }
+    }
+
+    const diffOut = new Uint8Array(width * height * 4);
+    const colorDiffCount = pixelmatch(a, b, diffOut, width, height, options);
+    return colorDiffCount + transparencyDiffCount;
+}
+
 module.exports = {
     generateSessionId,
     parseDuration,
     durationToKorean,
     findZone,
     cleanupOrphanedTempDirs,
-    getZoneSetting
+    getZoneSetting,
+    isTransparentPixel,
+    countDiffPixels
 };

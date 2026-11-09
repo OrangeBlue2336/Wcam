@@ -1,13 +1,12 @@
 const axios = require('axios');
 const sharp = require('sharp');
 const { PNG } = require('pngjs');
-const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const fs = require('fs');
 const { AttachmentBuilder, EmbedBuilder } = require('discord.js');
 
 const monitorZones = require('../config/zones');
 const { Setting } = require('../db/models');
-const { getZoneSetting } = require('../utils/helpers');
+const { getZoneSetting, isTransparentPixel, countDiffPixels } = require('../utils/helpers');
 
 // services/monitor.js — 감시(checkZones)·알림(sendAlert)과 공유 상태(zoneMatchData/zoneHistory/lastAlertTime)를 모아둔 파일.
 // index.js가 client로 한 번만 생성한 뒤, 이 "단 하나의" 참조를 여러 파일(server/api.js, commands/history.js 등)이 함께 씀
@@ -47,6 +46,10 @@ module.exports = (client) => {
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const idx = (y * width + x) * 4;
+
+                // 양쪽 모두 투명이면 RGB 값과 무관하게 일치로 처리 (pixelmatch 계산과 기준을 맞춤)
+                if (isTransparentPixel(a, idx) && isTransparentPixel(b, idx)) continue;
+
                 const dr = Math.abs(a[idx] - b[idx]);
                 const dg = Math.abs(a[idx + 1] - b[idx + 1]);
                 const db = Math.abs(a[idx + 2] - b[idx + 2]);
@@ -142,12 +145,9 @@ module.exports = (client) => {
                 const currentImg = PNG.sync.read(currentFlagBuffer);
                 const originalImg = PNG.sync.read(fs.readFileSync(zone.originalPath));
                 const { width, height } = originalImg;
-                const diff = new PNG({ width, height });
 
-                const numDiffPixels = pixelmatch(
-                    originalImg.data, currentImg.data, diff.data, width, height,
-                    { threshold: 0.1 }
-                );
+                // 투명 픽셀 불일치까지 포함해서 계산 (utils/helpers.js의 countDiffPixels)
+                const numDiffPixels = countDiffPixels(originalImg.data, currentImg.data, width, height, { threshold: 0.1 });
 
                 const totalPixels = width * height;
                 const matchPercentage = ((totalPixels - numDiffPixels) / totalPixels) * 100;

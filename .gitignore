@@ -30,3 +30,5 @@ zip.py
 # 에이전트 관련 파일
 AGENTS.md
 CLAUDE.md
+
+/tools/
