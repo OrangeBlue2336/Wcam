@@ -26,5 +26,10 @@
   },
   "overrides": {
     "undici": "^6.23.0"
+  },
+  "allowScripts": {
+    "canvas@3.2.1": true,
+    "qs@6.16.2": true,
+    "qs@6.14.3": true
   }
 }

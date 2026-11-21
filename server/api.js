@@ -90,6 +90,12 @@ module.exports = (app, { zoneMatchData, zoneHistory, monitorZones, client }) => 
     // 일치율 히스토리 API (차트용)
     app.get('/api/zone/:zoneName/history', validateApiKey, (req, res) => {
         const zoneName = req.params.zoneName;
+        const zone = monitorZones.find(z => z.name === zoneName);
+
+        if (!zone) {
+            return res.status(404).json({ success: false, error: '구역을 찾을 수 없습니다' });
+        }
+
         const history = zoneHistory[zoneName] || [];
         
         res.json({
